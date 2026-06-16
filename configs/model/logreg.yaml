@@ -1,0 +1,7 @@
+# Example model config — hyperparameters plus where the canonical pipeline
+# checkpoint is written (the train stage's stable DVC output).
+name: logreg
+C: 1.0
+max_iter: 200
+output_dir: models                # stable path DVC tracks as the train stage out
+checkpoint: model.skops           # checkpoint filename (portable skops format)

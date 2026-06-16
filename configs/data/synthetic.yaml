@@ -1,0 +1,5 @@
+# Example data config. Names the raw and processed locations and the synthetic
+# generation parameters used by the fetch stage.
+name: synthetic
+raw_dir: data/raw/synthetic
+processed_dir: data/processed/synthetic

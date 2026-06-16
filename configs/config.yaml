@@ -1,0 +1,16 @@
+# Base Hydra config. Experiment configs compose on top of this.
+#
+# The `defaults` list selects one option from each config group and pulls in
+# the hydra settings (which register the provenance callbacks). Override any of
+# these on the command line, e.g.:
+#   python scripts/train.py model=logreg data=synthetic seed=7
+defaults:
+  - hydra: default        # registers the run-stamp + split-properties callbacks (keep this)
+  - fetch: synthetic
+  - data: synthetic
+  - model: logreg
+  - split: standard
+  - _self_
+
+# Global settings available to every run.
+seed: 42

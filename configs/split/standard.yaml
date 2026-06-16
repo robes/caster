@@ -1,0 +1,19 @@
+# Example split config. Deterministic given the global `seed`.
+#
+# The split-properties callback reads this block to capture _split_properties.json:
+#   output_dir / filename  -> where to find the produced split CSV
+#   partition_column       -> the column holding train/val/test
+#   index_column           -> (optional) row identity for index-set hashing
+#   class_column           -> (optional) enables per-partition class-balance capture
+#   group_column           -> (optional) enables cross-partition disjointness (leakage) capture
+# All best-effort: omit what doesn't apply; the callback degrades gracefully.
+name: standard
+output_dir: data/features/splits/standard
+filename: splits.csv
+partition_column: split
+index_column: index
+class_column: target          # the synthetic dataset's label column
+# group_column:               # no groups in the synthetic example
+test_frac: 0.2
+val_frac: 0.1
+seed: 42

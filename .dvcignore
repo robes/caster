@@ -1,0 +1,6 @@
+# Patterns DVC should ignore when tracking directories.
+# Same syntax as .gitignore.
+.git/
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,10 @@
+# @package _global_
+# Held-out test — the run-ONCE role, deliberately NOT in the DVC pipeline. Runs
+# against the test split, at publication only. Selected with `+eval=holdout`.
+# Running this during model selection leaks the test set; keeping it out of
+# `dvc repro` (a repeatedly-run command) is the safeguard.
+eval:
+  name: holdout
+  split_name: test
+run_dir: ???                       # set on the CLI: run_dir=outputs/<run>/ or models/
+checkpoint: model.skops

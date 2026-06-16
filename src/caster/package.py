@@ -1,0 +1,511 @@
+"""Archival release packaging.
+
+The `rocrate` and `bagit` libraries do the bundle mechanics. This module is the
+connective code they cannot supply: pinning the source distribution to the
+commit recorded in the run's stamp, knowing which directories form this
+project's provenance chain, and mapping dataset disposition onto the libraries'
+options.
+
+Layout produced (a BagIt bag whose payload is an RO-Crate):
+
+    <release>/                       bag root
+      bagit.txt, bag-info.txt, manifest-sha256.txt   (bagit lib)
+      data/                          payload == RO-Crate root
+        ro-crate-metadata.json       (rocrate lib)
+        model/                       checkpoint bytes + .sha256
+        provenance/{config,run,data_sources,eval}/
+        data_manifest.sha256         portable data hashes (no DVC remote dep)
+        splits/                      split CSVs (bytes by default)
+        datasets/<name>/             only datasets explicitly embedded
+        source/<project>-<tag>.tar.gz   git archive at the run commit
+
+Disposition (per dataset, from the release config):
+    omit   -> Croissant record + hash in data_manifest travel; bytes do not (default)
+    fetch  -> referenced via RO-Crate contentUrl / BagIt fetch.txt
+    embed  -> bytes pulled at the run commit (dvc get --rev) into the payload
+
+CLI:
+    python -m caster.package <release_config.yaml>
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import yaml
+
+from caster._cli import emit_json, info
+from caster.provenance import STAMP_FILENAME, write_stamp
+
+_CHUNK = 1 << 20
+_VALID_DISPOSITIONS = ("omit", "fetch", "embed")
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def _run(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    cp = subprocess.run(args, capture_output=True, text=True)
+    if check and cp.returncode != 0:
+        raise RuntimeError(f"command failed: {' '.join(args)}\n{cp.stderr.strip()}")
+    return cp
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(_CHUNK), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _require_libs():
+    try:
+        import bagit
+        from rocrate.rocrate import ROCrate
+    except ImportError as exc:
+        raise ImportError(
+            "Packaging requires the 'rocrate' and 'bagit' libraries: pip install rocrate bagit"
+        ) from exc
+    return bagit, ROCrate
+
+
+# ---------------------------------------------------------------------------
+# the one piece no library knows: the run's commit, from its stamp
+# ---------------------------------------------------------------------------
+
+
+def _run_commit(run_dir: Path) -> str | None:
+    """The commit that produced this run, read from its _provenance.json stamp."""
+    stamp = run_dir / STAMP_FILENAME
+    if stamp.exists():
+        return (json.loads(stamp.read_text()).get("git") or {}).get("commit")
+    return None
+
+
+def _extract_data_manifest(repo_root: Path) -> str:
+    """Build a portable `sha256`-style data manifest from the project's integrity
+    record, with no remote dependency.
+
+    Reads md5/sha hashes out of DVC pointer files (`*.dvc`, `dvc.lock`) and/or a
+    flat `data/**/manifest.sha256`, and emits `<hash>  <path>` lines. This is the
+    data *identity*, extracted for a reader who lacks the DVC remote — the
+    pointers themselves (which only address that remote) are not shipped.
+    """
+    lines: list[str] = []
+    # 1. DVC pointer files: pull out the recorded md5/hash + path.
+    for dvc in sorted(repo_root.rglob("*.dvc")):
+        try:
+            doc = yaml.safe_load(dvc.read_text()) or {}
+        except Exception:
+            continue
+        for out in doc.get("outs", []):
+            h = out.get("md5") or out.get("sha256") or out.get("hash")
+            p = out.get("path")
+            if h and p:
+                lines.append(f"{h}  {p}")
+    # 2. dvc.lock stage outputs.
+    lock = repo_root / "dvc.lock"
+    if lock.exists():
+        try:
+            doc = yaml.safe_load(lock.read_text()) or {}
+            for stage in (doc.get("stages") or {}).values():
+                for out in stage.get("outs", []):
+                    h = out.get("md5") or out.get("hash")
+                    p = out.get("path")
+                    if h and p:
+                        lines.append(f"{h}  {p}")
+        except Exception:
+            pass
+    # 3. Any flat sha256 manifests the project keeps for untracked data.
+    for man in sorted(repo_root.rglob("manifest.sha256")):
+        try:
+            lines.extend(ln for ln in man.read_text().splitlines() if ln.strip())
+        except Exception:
+            pass
+    # Deduplicate, stable order.
+    seen, out_lines = set(), []
+    for ln in lines:
+        if ln not in seen:
+            seen.add(ln)
+            out_lines.append(ln)
+    return ("\n".join(out_lines) + "\n") if out_lines else ""
+
+
+def _gather_card_facts(cfg: dict, run_dir: Path, commit: str | None) -> dict:
+    """Collect the auto-fillable *facts* for the model card from provenance the
+    packager already has: the release config, the run-stamp (metrics, commit),
+    the held-out eval, and the dataset names. Human-judgment fields are NOT
+    gathered here — the template marks those as required TODOs."""
+    from datetime import datetime, timezone
+
+    # metrics: prefer the held-out eval result, else the train run's stamp stats.
+    metrics: dict = {}
+    eval_name = None
+    eval_dir = cfg.get("eval_dir")
+    if eval_dir:
+        eval_dir = Path(eval_dir)
+        eval_name = eval_dir.name
+        for cand in sorted(eval_dir.glob("*.json")):
+            # skip Caster's own provenance/bookkeeping files — not metrics
+            if cand.name.startswith("_"):
+                continue
+            try:
+                d = json.loads(cand.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(d, dict):
+                numeric = {k: v for k, v in d.items() if isinstance(v, (int, float))}
+                if numeric:  # a metrics file looks like flat numbers
+                    metrics = numeric
+                    break
+    if not metrics:
+        stamp = run_dir / STAMP_FILENAME
+        if stamp.exists():
+            try:
+                stats = json.loads(stamp.read_text()).get("stats") or {}
+                metrics = {k: v for k, v in stats.items() if isinstance(v, (int, float))}
+            except (OSError, json.JSONDecodeError):
+                metrics = {}
+
+    datasets = [d.get("name") for d in cfg.get("datasets", []) if d.get("name")]
+
+    return {
+        "project_name": cfg.get("project_name", "model"),
+        "version": cfg.get("tag", ""),
+        "model_id": cfg.get("model_id", "main"),
+        "organization": cfg.get("organization"),
+        "contact_email": cfg.get("contact_email"),
+        "license": cfg.get("license"),
+        "description": cfg.get("description", ""),
+        "commit": commit,
+        "date_packaged": datetime.now(timezone.utc).date().isoformat(),
+        "datasets": datasets,
+        "metrics": metrics,
+        "eval_name": eval_name,
+    }
+
+
+def _render_model_card(facts: dict, repo_root: Path) -> str | None:
+    """Render the project's own `MODEL_CARD.md` (the single source of truth, in
+    the repo root) with the gathered facts. The user authors the judgment
+    sections in that file; Jinja fills the factual fields and carries the authored
+    prose through. Returns None if the project has no card (then packaging simply
+    omits it)."""
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+    card_path = repo_root / "MODEL_CARD.md"
+    if not card_path.exists():
+        return None
+    env = Environment(
+        loader=FileSystemLoader(str(repo_root)),
+        autoescape=select_autoescape(enabled_extensions=()),  # Markdown, not HTML
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+    return env.get_template("MODEL_CARD.md").render(**facts)
+
+
+def _git_archive(ref: str, prefix: str, dest: Path) -> str:
+    """git archive the repo at `ref` to `dest`; fall back to HEAD. Return ref used."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    probe = _run("git", "rev-parse", "--verify", "--quiet", ref, check=False)
+    used = ref if probe.returncode == 0 else "HEAD"
+    if used != ref:
+        print(f"caster: ref {ref!r} not resolvable; archiving HEAD", file=sys.stderr)
+    _run("git", "archive", f"--prefix={prefix}/", "--format=tar.gz", "-o", str(dest), used)
+    return used
+
+
+# ---------------------------------------------------------------------------
+# provenance chain assembly (project-layout knowledge)
+# ---------------------------------------------------------------------------
+
+
+def _copy_into(src: Path, dest: Path) -> bool:
+    if src.is_dir():
+        shutil.copytree(src, dest, dirs_exist_ok=True)
+        return True
+    if src.is_file():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dest)
+        return True
+    return False
+
+
+def _stage_payload(
+    cfg: dict, repo_root: Path, run_dir: Path, commit: str | None, payload: Path
+) -> dict:
+    """Lay out the RO-Crate payload directory. Returns a summary dict."""
+    summary: dict = {}
+
+    # checkpoint as opaque bytes + sha256 sidecar.
+    # Bytes come from `checkpoint_path` if set (the stable pipeline model
+    # produced by `dvc repro`), else from run_dir/checkpoint. Provenance
+    # (config, stamp, commit) always comes from run_dir — so a release can pair
+    # the canonical pipeline model with the train run that produced it.
+    ckpt_src = (
+        Path(cfg["checkpoint_path"]) if cfg.get("checkpoint_path") else run_dir / cfg["checkpoint"]
+    )
+    if not ckpt_src.exists():
+        raise FileNotFoundError(f"checkpoint not found: {ckpt_src}")
+    model_dir = payload / "model"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_dest = model_dir / ("model" + ckpt_src.suffix)
+    shutil.copy2(ckpt_src, ckpt_dest)
+    digest = _sha256(ckpt_dest)
+    ckpt_dest.with_name(ckpt_dest.name + ".sha256").write_text(f"{digest}  {ckpt_dest.name}\n")
+    summary["checkpoint_sha256"] = digest
+
+    prov = payload / "provenance"
+    # config: Hydra composed config + overrides
+    if _copy_into(run_dir / ".hydra", prov / "config"):
+        summary["config"] = True
+    # run: the stamp itself, plus split properties if this was a split run
+    _copy_into(run_dir / STAMP_FILENAME, prov / "run" / STAMP_FILENAME)
+    from caster.splits import SPLIT_PROPERTIES_FILENAME
+
+    if _copy_into(run_dir / SPLIT_PROPERTIES_FILENAME, prov / "run" / SPLIT_PROPERTIES_FILENAME):
+        summary["split_properties"] = True
+    # Portable data integrity manifest, NOT the DVC pointers. The bundle is for
+    # a reader without our DVC remote, so we extract the *hashes* (data identity)
+    # from whatever integrity record the project uses and write them to a plain,
+    # remote-independent file. The pointer-as-address is deliberately dropped.
+    manifest = _extract_data_manifest(repo_root)
+    if manifest:
+        (payload / "data_manifest.sha256").write_text(manifest)
+        summary["data_manifest_entries"] = manifest.count("\n")
+    # data_sources: the Croissant records (description + fetch instructions)
+    ds_src = repo_root / "data_sources"
+    if ds_src.is_dir():
+        ds_dest = prov / "data_sources"
+        ds_dest.mkdir(parents=True, exist_ok=True)
+        for f in sorted(ds_src.iterdir()):
+            if f.is_file() and f.suffix in (".json", ".yaml") and not f.name.startswith("_"):
+                shutil.copy2(f, ds_dest / f.name)
+    # eval artifact (whole)
+    if "eval_dir" in cfg and _copy_into(Path(cfg["eval_dir"]), prov / "eval"):
+        summary["eval"] = Path(cfg["eval_dir"]).name
+
+    # Model card: the project's own MODEL_CARD.md (repo root) is the single source
+    # of truth — the user authors the judgment sections; we fill the facts and
+    # carry it into the bundle. Omitted if the project has no card.
+    card = _render_model_card(_gather_card_facts(cfg, run_dir, commit), repo_root)
+    if card is not None:
+        (payload / "MODEL_CARD.md").write_text(card)
+        summary["model_card"] = True
+
+    # source distribution pinned to the run commit
+    project = cfg.get("project_name") or repo_root.name
+    tag = cfg.get("tag", "untagged")
+    ref_used = _git_archive(
+        commit or "HEAD", f"{project}-{tag}", payload / "source" / f"{project}-{tag}.tar.gz"
+    )
+    summary["source_ref"] = ref_used
+    return summary
+
+
+def _stage_datasets(
+    cfg: dict, repo_root: Path, commit: str, payload: Path
+) -> tuple[list[str], list[str]]:
+    """Apply per-dataset disposition. Returns (embedded names, fetch.txt lines)."""
+    embedded: list[str] = []
+    fetch_lines: list[str] = []
+    for entry in cfg.get("datasets", []):
+        name = entry["name"]
+        disp = entry.get("disposition", "omit")
+        if disp not in _VALID_DISPOSITIONS:
+            raise ValueError(f"dataset {name!r}: bad disposition {disp!r}")
+        if disp == "embed":
+            dest = payload / "datasets" / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            path = entry.get("path", f"data/{name}")
+            cp = _run("dvc", "get", ".", path, "--rev", commit, "-o", str(dest), check=False)
+            if cp.returncode != 0:
+                print(
+                    f"caster: dvc get failed for {path!r}; copying workspace bytes (unversioned)",
+                    file=sys.stderr,
+                )
+                _copy_into(repo_root / path, dest)
+            embedded.append(name)
+        elif disp == "fetch":
+            ft = entry.get("fetch_txt")
+            if not ft or not Path(ft).exists():
+                raise ValueError(
+                    f"dataset {name!r}: disposition 'fetch' needs a committed 'fetch_txt'"
+                )
+            fetch_lines += [ln for ln in Path(ft).read_text().splitlines() if ln.strip()]
+        # omit: nothing; the Croissant record + DVC pointer already travel
+    return embedded, fetch_lines
+
+
+# ---------------------------------------------------------------------------
+# RO-Crate metadata (rocrate lib) + BagIt wrap (bagit lib)
+# ---------------------------------------------------------------------------
+
+
+def _write_crate_metadata(ROCrate, payload: Path, cfg: dict, summary: dict) -> None:
+    """Register payload contents as RO-Crate entities and write the metadata."""
+    crate = ROCrate()
+    crate.name = f"{cfg.get('project_name', payload.name)} {cfg.get('tag', '')}".strip()
+    crate.description = cfg.get("description", "Caster archival release")
+    # register the main directories as Dataset entities and the model as a File
+    for sub in ("model", "provenance", "source", "datasets"):
+        d = payload / sub
+        if d.is_dir():
+            crate.add_directory(str(d), dest_path=sub)
+    # the metadata file lands at payload/ro-crate-metadata.json
+    crate.write(str(payload))
+
+
+def package(
+    cfg: dict, repo_root: Path | None = None, *, dry_run: bool = False, as_json: bool = False
+) -> dict:
+    """Build the bag. Returns a stats dict for the packaging step's own stamp."""
+    bagit, ROCrate = _require_libs()
+    repo_root = repo_root or Path(_run("git", "rev-parse", "--show-toplevel").stdout.strip())
+
+    org = cfg.get("organization")
+    email = cfg.get("contact_email")
+    if not org or not email:
+        raise ValueError("release config requires 'organization' and 'contact_email'")
+
+    if not cfg.get("run_dir"):
+        raise ValueError(
+            "release config requires 'run_dir' (the run whose "
+            "provenance to package — its .hydra config and stamp)"
+        )
+    run_dir = Path(cfg["run_dir"])
+    if not run_dir.exists():
+        raise FileNotFoundError(
+            f"run_dir does not exist: {run_dir}. Set 'run_dir' in the release "
+            f"config to a real train run directory (e.g. outputs/<date>/<time>/) "
+            f"before packaging — the placeholder path is not a real run."
+        )
+    # A bundle's purpose is to carry the provenance chain. Missing pieces are not
+    # silently-skippable: collect a warning for each, so a provenance-stripped
+    # bundle is never produced unnoticed.
+    warnings: list[str] = []
+    if not (run_dir / ".hydra").exists():
+        warnings.append(
+            f"{run_dir} has no .hydra/ config; the bundle will lack the composed run configuration."
+        )
+    if not (run_dir / STAMP_FILENAME).exists():
+        warnings.append(
+            f"{run_dir} has no {STAMP_FILENAME}; the bundle will lack "
+            f"the run-stamp (commit + environment provenance)."
+        )
+    eval_dir = cfg.get("eval_dir")
+    if eval_dir and not Path(eval_dir).exists():
+        warnings.append(
+            f"eval_dir {eval_dir} does not exist; the bundle will lack "
+            f"the held-out evaluation result."
+        )
+    commit = _run_commit(run_dir)
+    if commit is None:
+        warnings.append(
+            "no commit in the run stamp; the source archive will fall "
+            "back to HEAD, which may not be the code that produced this run."
+        )
+    if not as_json:
+        for w in warnings:
+            info(f"caster: WARNING — {w}")
+    tag = cfg.get("tag", "untagged")
+    model_id = cfg.get("model_id", "main")
+    asset_stem = f"{tag}_{model_id}"
+    out = Path(cfg.get("output_dir", "releases"))
+
+    if dry_run:
+        # Report what would be packaged and which warnings would fire; write nothing.
+        return {
+            "dry_run": True,
+            "asset": f"{asset_stem}.zip",
+            "output_dir": str(out),
+            "run_dir": str(run_dir),
+            "would_use_commit": commit,
+            "warnings": warnings,
+        }
+
+    out.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Build the RO-Crate at the bag root. bagit.make_bag then relocates
+        # everything into data/, so the BagIt payload (data/) IS the RO-Crate
+        # root and ro-crate-metadata.json lands directly in data/.
+        bag_root = Path(tmp) / asset_stem
+        bag_root.mkdir(parents=True)
+        payload = bag_root
+
+        summary = _stage_payload(cfg, repo_root, run_dir, commit, payload)
+        embedded, fetch_lines = _stage_datasets(cfg, repo_root, summary["source_ref"], payload)
+        _write_crate_metadata(ROCrate, payload, cfg, summary)
+
+        # wrap as a bag: bagit moves the payload into data/ and writes manifests.
+        bagit.make_bag(
+            str(bag_root),
+            checksums=["sha256"],
+            bag_info={
+                "Organization": org,
+                "Contact-Email": email,
+                "External-Description": f"{cfg.get('project_name', asset_stem)} {tag}",
+                "Source-Commit": summary["source_ref"],
+            },
+        )
+        if fetch_lines:
+            (bag_root / "fetch.txt").write_text("\n".join(fetch_lines) + "\n")
+
+        shutil.make_archive(str(out / asset_stem), "zip", tmp, asset_stem)
+
+    stats = {
+        "platform": "rocrate-bagit",
+        "asset": f"{asset_stem}.zip",
+        "source_ref": summary["source_ref"],
+        "checkpoint_sha256": summary["checkpoint_sha256"],
+        "embedded_datasets": embedded,
+        "fetch_entries": len(fetch_lines),
+        "warnings": warnings,
+    }
+    # the packaging step is itself provenance-tracked
+    write_stamp(out, stats=stats)
+    return stats
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Caster archival packaging.")
+    parser.add_argument("config", help="path to a release config YAML")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report what would be packaged (and any warnings); write nothing",
+    )
+    parser.add_argument("--json", action="store_true", help="machine-readable output on stdout")
+    args = parser.parse_args(argv)
+    cfg = yaml.safe_load(Path(args.config).read_text()) or {}
+    stats = package(cfg, dry_run=args.dry_run, as_json=args.json)
+
+    if args.json:
+        emit_json("package", ok=True, result=stats, problems=stats.get("warnings", []))
+        return 0
+    if args.dry_run:
+        info(
+            f"DRY RUN — would write {stats['output_dir']}/{stats['asset']} "
+            f"(source @ {(stats['would_use_commit'] or 'HEAD')[:7]}); "
+            f"{len(stats['warnings'])} warning(s). Nothing written."
+        )
+        return 0
+    out = Path(cfg.get("output_dir", "releases"))
+    print(f"wrote {out / stats['asset']}  (source @ {stats['source_ref'][:7]})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

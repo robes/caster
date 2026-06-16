@@ -1,0 +1,11 @@
+# @package _global_
+# A full experiment config: composes group choices + overrides into one run.
+# Selected with `+experiment=baseline`.
+defaults:
+  - override /data: synthetic
+  - override /model: logreg
+  - override /split: standard
+
+seed: 42
+model:
+  C: 1.0

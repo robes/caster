@@ -1,0 +1,14 @@
+# @package hydra
+# Registers Caster's provenance callbacks so every Hydra run records what it
+# should, automatically:
+#   * run_stamp        -> _provenance.json (commit, environment, completion, stats)
+#   * split_properties -> _split_properties.json, but only for runs whose config
+#                         has a `split:` block (a no-op otherwise)
+#
+# These are intentionally the only Caster-specific Hydra settings, isolated here
+# so that adopting hydra-zen requires re-expressing just this one block.
+callbacks:
+  run_stamp:
+    _target_: caster.provenance.RunStampCallback
+  split_properties:
+    _target_: caster.splits.SplitPropertiesCallback

@@ -1,0 +1,9 @@
+# @package _global_
+# Validation evaluation — the IN-PIPELINE role. Runs against the val split every
+# `dvc repro`, for model selection. Selected with `+eval=validation`.
+eval:
+  name: validation
+  split_name: val
+  metrics_out: models/validation_metrics.json   # stable path for the DVC metrics stage
+run_dir: ???                       # set on the CLI: run_dir=models (the pipeline model)
+checkpoint: model.skops

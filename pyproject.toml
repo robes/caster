@@ -1,0 +1,71 @@
+[project]
+name = "myproject"
+version = "0.1.0"
+description = "An ML project built from the Caster template."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "pyyaml>=6.0",
+    # Core workflow tools the template is built around.
+    "hydra-core>=1.3",
+    "dvc>=3.0",
+    "gto>=1.0",
+    # The example pipeline uses scikit-learn; replace with your framework.
+    "scikit-learn>=1.3",
+    "skops>=0.10",          # portable checkpoint format used by the example (model.skops)
+    "numpy>=1.24",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+# Croissant data-source validation and emit.
+croissant = ["mlcroissant>=1.0"]
+# Archival release packaging (RO-Crate + BagIt).
+packaging = ["rocrate>=0.9", "bagit>=1.8", "jinja2>=3.0"]
+# Everything optional.
+all = ["mlcroissant>=1.0", "rocrate>=0.9", "bagit>=1.8", "jinja2>=3.0"]
+# Development tooling.
+dev = ["pytest>=8.0", "ruff>=0.5", "pre-commit>=4.0"]
+
+[project.scripts]
+# A single unified command dispatches to the module CLIs; each is also still
+# runnable as `python -m caster.<module>`.
+caster = "caster.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["caster*", "myproject*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "scripts"]
+
+[tool.ruff.lint]
+# A reasonable default set: pyflakes, pycodestyle, isort, bugbear, pyupgrade.
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]  # line length handled by the formatter
+
+[tool.pytest.ini_options]
+testpaths = ["src/caster/tests"]
+pythonpath = ["src"]
+addopts = "-q"
+filterwarnings = [
+    # This deprecation originates in rdflib's JSON-LD parser (pulled in
+    # transitively by mlcroissant during Croissant validation), not in Caster's
+    # code, so we can't fix the upstream call. Scope the ignore to exactly that
+    # message so nothing else — including our own deprecations — is masked.
+    "ignore:ConjunctiveGraph is deprecated:DeprecationWarning",
+]
+
+[tool.uv]
+# gto 1.x has an unbounded `typer>=0.4.1` pin, but its CLI breaks on typer 0.16+
+# ("Command.__init__() got an unexpected keyword argument rich_markup_mode").
+# We do not use typer ourselves; constrain gto's transitive typer to the 0.15
+# line, which its CLI works with. Remove once gto bounds typer upstream.
+override-dependencies = ["typer>=0.15,<0.16"]

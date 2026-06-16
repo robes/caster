@@ -1,0 +1,15 @@
+# Copy to <tag>_<model_id>.yaml and edit. See docs/PACKAGING.md for field details.
+project_name: <project>
+tag: <vX.Y.Z>
+model_id: main
+description: <one line>
+run_dir: outputs/<date>/<time>    # train run: supplies .hydra config + _provenance.json
+checkpoint_path: models/model.<ext>   # canonical pipeline model bytes (stable DVC out)
+checkpoint: model.<ext>
+eval_dir: outputs/<date>/<time>   # a HELD-OUT (+eval=holdout) run — the honest final number
+output_dir: releases
+organization: <Institution>
+contact_email: <contact@example.org>
+datasets:
+  - name: <dataset_name>
+    disposition: omit            # omit | fetch (needs fetch_txt) | embed

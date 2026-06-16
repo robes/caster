@@ -1,0 +1,81 @@
+# DVC pipeline: fetch -> preprocess -> split -> train -> evaluate(validation).
+#
+# Single source of truth for parameters: the Hydra config files under configs/.
+# The scripts read those configs at runtime; DVC watches the SAME files (via the
+# `params:` blocks below) for change-detection. There is no separate params.yaml
+# — a value lives in exactly one place, so the config the script uses, the config
+# DVC watches, and the config you edit are all the same file. No duplication, no
+# drift.
+#
+# Every stage is a Hydra app, so each run is auto-stamped by the registered
+# callbacks (run-stamp always; split-properties for the split stage).
+#
+# The HELD-OUT TEST is intentionally absent: `evaluate.py +eval=holdout` is run
+# once, by hand, at publication — never in `dvc repro` (a repeatedly-run command).
+stages:
+  fetch:
+    cmd: python scripts/fetch.py
+    deps:
+      - scripts/fetch.py
+      - src/myproject/datasets/synthetic.py
+    params:
+      - configs/fetch/synthetic.yaml:
+          - n_samples
+          - n_features
+          - seed
+    outs:
+      - data/raw/synthetic
+
+  preprocess:
+    cmd: python scripts/preprocess.py
+    deps:
+      - scripts/preprocess.py
+      - src/myproject/datasets/synthetic.py
+      - data/raw/synthetic
+    # no params: this example's preprocessing has no tunable knobs. A real
+    # preprocess usually does — list its config file + keys here, like the others.
+    outs:
+      - data/processed/synthetic
+
+  split:
+    cmd: python scripts/split.py
+    deps:
+      - scripts/split.py
+      - src/myproject/training/loops.py
+      - data/processed/synthetic
+    params:
+      - configs/split/standard.yaml:
+          - test_frac
+          - val_frac
+          - seed
+    outs:
+      - data/features/splits/standard
+
+  train:
+    cmd: python scripts/train.py
+    deps:
+      - scripts/train.py
+      - src/myproject/models/logreg.py
+      - src/myproject/training/loops.py
+      - data/processed/synthetic
+      - data/features/splits/standard
+    params:
+      - configs/config.yaml:
+          - seed
+      - configs/model/logreg.yaml:
+          - C
+          - max_iter
+    outs:
+      - models/model.skops
+
+  evaluate:
+    # VALIDATION role (split=val), in-pipeline, for model selection.
+    cmd: python scripts/evaluate.py +eval=validation run_dir=models
+    deps:
+      - scripts/evaluate.py
+      - src/myproject/training/loops.py
+      - models/model.skops
+      - data/features/splits/standard
+    metrics:
+      - models/validation_metrics.json:
+          cache: false

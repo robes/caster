@@ -1,0 +1,50 @@
+# Pre-commit hooks for this repository.
+# Install once after cloning:  pre-commit install   (or: uv run pre-commit install)
+# Run manually on all files:   pre-commit run --all-files
+#
+# The first commit downloads each hook's environment (needs network) and is
+# slower; subsequent commits are fast.
+
+repos:
+  # Python linting and formatting (uses [tool.ruff] in pyproject.toml).
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.15
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  # Strip outputs from Jupyter notebooks before commit, so notebooks/ stays a
+  # thinking space without bloating diffs or committing rendered output.
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.7.1
+    hooks:
+      - id: nbstripout
+
+  # Keep uv.lock in sync with pyproject.toml. The `uv-lock` hook runs `uv lock`:
+  # it creates uv.lock on the first commit if absent, is a no-op when the lock is
+  # already current, and re-locks (failing the commit so you re-stage) whenever
+  # pyproject.toml dependencies drift from the lock. This is what keeps the
+  # lockfile honest — and therefore what makes the run-stamp's recorded
+  # `uv_lock_sha256` meaningful rather than a hash of a stale lock.
+  # NOTE: if you do not use uv, remove this hook block.
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: "0.11.7"
+    hooks:
+      - id: uv-lock
+
+  # General hygiene.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+        # Block accidental commits of checkpoints, large data files, etc.
+        # uv.lock and split CSVs are typically well under 1 MB.
+      - id: mixed-line-ending
+        args: ['--fix=lf']

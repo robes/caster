@@ -1,0 +1,23 @@
+# Archival release config for caster.package.
+# Packages the canonical pipeline model (models/model.skops from `dvc repro`)
+# with the provenance of the train run that produced it, plus the HELD-OUT test
+# result (the honest final number) — not the validation metric.
+#
+# Fill in run_dir / eval_dir with your actual run directories before packaging:
+#   run_dir  : a train run (supplies .hydra config + _provenance.json)
+#   eval_dir : a `+eval=holdout` run (the honest final number)
+project_name: myproject
+tag: v1.0.0
+model_id: main
+description: myproject v1.0 — example archival release.
+run_dir: outputs/2026-01-01/00-00-00       # <- a train run dir
+checkpoint_path: models/model.skops        # canonical pipeline model bytes
+checkpoint: model.skops
+eval_dir: outputs/2026-01-01/00-00-00       # <- a held-out (+eval=holdout) run dir
+output_dir: releases
+organization: Example Lab
+contact_email: lab@example.org
+datasets:
+  - name: synthetic
+    disposition: embed
+    path: data/raw/synthetic   # bytes travel in the bundle (small; demonstrates embedding)

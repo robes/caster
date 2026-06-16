@@ -1,0 +1,50 @@
+# --- General ---
+.DS_Store
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# --- Caches & tooling ---
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.mypy_cache/
+
+# --- Hydra / runs ---
+# Run directories are reproducible from code + data + seed; not committed.
+# (If you choose to DVC-track a run, its .dvc pointer is committed and the
+#  bytes go to the DVC remote — the directory itself still stays gitignored.)
+outputs/
+multirun/
+
+# --- Releases ---
+releases/
+
+# --- DVC-managed data ---
+# The bytes are tracked by DVC (cache + remote), not git. The committed
+# artifacts are the *.dvc pointer files and dvc.lock, which are NOT ignored.
+/data/raw/*
+/data/processed/*
+/data/features/*
+# ...but keep the directory structure and the DVC pointer files:
+!/data/raw/.gitkeep
+!/data/processed/.gitkeep
+!/data/raw/*.dvc
+!/data/processed/*.dvc
+!/data/features/*.dvc
+
+# --- DVC internals ---
+/.dvc/cache
+/.dvc/tmp
+/.dvc/config.local
+
+# --- Reports (commit deliberately if you want them in history) ---
+reports/*.pdf
