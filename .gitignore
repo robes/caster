@@ -19,10 +19,22 @@ venv/
 .mypy_cache/
 
 # --- Hydra / runs ---
-# Run directories are reproducible from code + data + seed; not committed.
-# (If you choose to DVC-track a run, its .dvc pointer is committed and the
+# Run directories are reproducible from code + data + seed; the bulk of one is
+# checkpoints, and the canonical ones are already a DVC out of the train stage.
+# (If you choose to DVC-track a whole run, its .dvc pointer is committed and the
 #  bytes go to the DVC remote — the directory itself still stays gitignored.)
-outputs/
+#
+# The run-stamps are the exception, and are committed. docs/PROVENANCE.md calls
+# them the durable record — commit, environment and stats per run — while the
+# experiment ledger is a regenerable view over them. Ignoring them would make
+# `rm -rf outputs/` destroy the run history and the ledger with it, for the sake
+# of a few KB. Same pattern as the DVC section below: `**` rather than a bare
+# directory, because git will not descend into an excluded directory, so the
+# directories must be re-admitted before a file inside them can be.
+outputs/**
+!outputs/**/
+!outputs/**/_provenance.json
+# multirun/ is not re-admitted: `caster provenance ledger` scans outputs/ only.
 multirun/
 
 # --- Releases ---

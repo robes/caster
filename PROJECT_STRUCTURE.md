@@ -99,7 +99,7 @@ project/
 │   ├── processed/                # preprocessing stage outputs (pinned by dvc.lock)
 │   │   └── <dataset_name>/
 │   └── features/                 # OPTIONAL further stage outputs (features, splits inputs)
-├── outputs/                     # Hydra run directories (gitignored unless DVC-tracked)
+├── outputs/                     # Hydra run directories (gitignored, except the run-stamps, unless DVC-tracked)
 │   └── YYYY-MM-DD/HH-MM-SS/      # Hydra's default run-dir scheme
 │       ├── .hydra/              # composed config, overrides, hydra config (Hydra writes these)
 │       ├── _provenance.json     # the run-stamp (commit, env, completion, stats)
