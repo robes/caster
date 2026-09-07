@@ -66,7 +66,7 @@ def git_state() -> dict[str, Any]:
     commit = _git("rev-parse", "HEAD")
     if commit is None:
         return {"commit": None, "branch": None, "dirty": None}
-    status = _git("status", "--porcelain")
+    status = _git("status", "--porcelain", "--untracked-files=no")
     return {
         "commit": commit,
         "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
