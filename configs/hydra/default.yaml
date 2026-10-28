@@ -10,5 +10,8 @@
 callbacks:
   run_stamp:
     _target_: caster.provenance.RunStampCallback
+    # dvc status at job start (slow): set true per run with
+    # hydra.callbacks.run_stamp.check_data=true
+    check_data: false
   split_properties:
     _target_: caster.splits.SplitPropertiesCallback

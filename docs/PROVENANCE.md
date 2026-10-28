@@ -82,6 +82,23 @@ run's headline stats — no tracking server required:
     `reports/`): under Hydra the state is taken when the job *starts*. The
     `caster.provenance stamp` CLI, which runs after the command, takes it at
     stamp time.
+
+  Two fields appear only when they carry information, so a clean run pays
+  nothing for them:
+  - **`dirty_files`** — when `dirty` is true, the paths that differ (capped at
+    50), so a dirty run can be diagnosed afterwards.
+  - **What pins the pipeline data, when the commit's `dvc.lock` doesn't.**
+    The dirty check ignores `dvc.lock`, so a run can start from a working lock
+    that isn't the commit's — and then the commit points at the *previous*
+    pipeline state, not the data and models the run read.
+    - Inside `dvc repro`: **`dvc_stage`** and **`dvc_inputs`**, the DVC hash of
+      each of the stage's deps that another stage produced (code deps are pinned
+      by the commit). These are DVC cache addresses, so they identify the data
+      whatever is committed later; the lock the stage saw is rewritten when it
+      finishes and is never committed as such.
+    - Any other run: **`dvc_lock`**, the git object id of the working lock.
+      That lock is normally the one committed next, and
+      `git log --all --find-object=<dvc_lock>` finds it.
 - **`environment`** — records the *binding between the run and the lockfile*,
   not just a package dump. `uv.lock` is a **declarative resolution** of your
   `pyproject.toml` constraints into a cross-platform dependency graph — it
@@ -139,6 +156,17 @@ run's headline stats — no tracking server required:
   record. The overrides
   are Hydra's own per-job list, not `sys.argv`, which under `--multirun` holds
   the whole sweep expression for every job.
+- **`data`** — *opt-in*: whether the data on disk matches what git and DVC
+  record, from `dvc status` taken at job start: `{"in_sync": true}`, or
+  `false` with the `out_of_sync` stages and `.dvc` files, or `null` if the check
+  could not run. The commit already *names* every input — `.dvc` pointers,
+  `dvc.lock`, the run dirs in `invocation.overrides` — but cannot tell that the
+  bytes on disk are those (a model overwritten by hand, a partial repro). This
+  check hashes the tracked data, so it is off by default; it takes about 12 s
+  on a large project. Turn it on for the runs that matter, such as a held-out
+  eval or a publication script:
+  `python scripts/evaluate.py +eval=holdout hydra.callbacks.run_stamp.check_data=true`,
+  or `caster provenance stamp <dir> --check-data`. Absent when not asked for.
 - **`completed`** — written only on success. Its *absence* means the run did not
   finish: "did this run complete?" is a file-existence check, with no status
   field to misread.

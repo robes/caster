@@ -69,6 +69,42 @@ def _git(*args: str) -> str | None:
 # roots keeps `dirty` about the code, while still seeing an untracked source file
 # a run imported — which plain `--untracked-files=no` would miss.
 _OUTPUT_DIRS = ("outputs", "multirun")
+_DIRTY_FILES_MAX = 50
+
+
+def _load_yaml(path: Path) -> Any:
+    """Parsed YAML, or None if absent or unreadable (which must not fail a stamp)."""
+    try:
+        import yaml
+
+        return yaml.safe_load(path.read_text()) if path.is_file() else None
+    except Exception:
+        return None
+
+
+def _declared_paths(entries: Any, wdir: Path) -> list[Path]:
+    """Root-relative paths of a dvc.yaml `deps`/`outs`/`metrics`/`plots` list.
+    Templated (`${...}`) entries are skipped: they are not resolved here."""
+    out = []
+    for e in entries if isinstance(entries, list) else []:
+        p = next(iter(e), None) if isinstance(e, dict) else e
+        if isinstance(p, str) and "${" not in p:
+            out.append(Path(os.path.normpath(wdir / p)))
+    return out
+
+
+def _dvc_spec() -> tuple[Path, dict] | None:
+    """The repository root and its parsed root `dvc.yaml`, if there is one."""
+    top = _git("rev-parse", "--show-toplevel")
+    spec = _load_yaml(Path(top) / "dvc.yaml") if top is not None else None
+    return (Path(top), spec) if isinstance(spec, dict) else None
+
+
+def _stages(spec: dict) -> dict[str, dict]:
+    stages = spec.get("stages")
+    if not isinstance(stages, dict):
+        return {}
+    return {name: s for name, s in stages.items() if isinstance(s, dict)}
 
 
 def _pipeline_paths() -> list[str]:
@@ -82,39 +118,19 @@ def _pipeline_paths() -> list[str]:
     still counts. Templated (`${...}`) and `foreach`/`matrix` paths are not
     resolved and stay in the check.
     """
-    top = _git("rev-parse", "--show-toplevel")
-    if top is None:
+    found = _dvc_spec()
+    if found is None:
         return []
-    dvc_yaml = Path(top) / "dvc.yaml"
-    try:
-        import yaml
-
-        spec = yaml.safe_load(dvc_yaml.read_text()) if dvc_yaml.is_file() else None
-    except Exception:  # an unreadable dvc.yaml must not fail the stamp
-        return []
-    if not isinstance(spec, dict):
-        return []
+    _, spec = found
     paths = ["dvc.lock"]
-
-    def declared(entries, wdir: Path) -> list[Path]:
-        out = []
-        for e in entries if isinstance(entries, list) else []:
-            p = next(iter(e), None) if isinstance(e, dict) else e
-            if isinstance(p, str) and "${" not in p:
-                out.append(Path(os.path.normpath(wdir / p)))
-        return out
-
-    stages = spec.get("stages")
-    for stage in stages.values() if isinstance(stages, dict) else []:
-        if not isinstance(stage, dict):
-            continue
+    for stage in _stages(spec).values():
         wdir = Path(stage.get("wdir", "."))
-        for p in declared(stage.get("outs"), wdir):
+        for p in _declared_paths(stage.get("outs"), wdir):
             paths += [p.as_posix(), (p.parent / ".gitignore").as_posix()]
         for key in ("metrics", "plots"):
-            paths += [p.as_posix() for p in declared(stage.get(key), wdir)]
+            paths += [p.as_posix() for p in _declared_paths(stage.get(key), wdir)]
     for key in ("metrics", "plots"):
-        paths += [p.as_posix() for p in declared(spec.get(key), Path("."))]
+        paths += [p.as_posix() for p in _declared_paths(spec.get(key), Path("."))]
     return paths
 
 
@@ -136,16 +152,76 @@ def git_state(exclude: tuple[str, ...] = ()) -> dict[str, Any]:
     `exclude` names extra output roots to keep out of the dirty check, for a
     project whose run directories are not under `outputs/` or `multirun/`. The
     files `dvc.yaml` declares as pipeline outputs are always excluded.
+
+    `dirty_files` (only when dirty) names what differs, so a dirty run can be
+    diagnosed later. When the working `dvc.lock` is not the commit's, the fields
+    that pin the pipeline data instead are added — see `_dvc_lock_state`.
     """
     commit = _git("rev-parse", "HEAD")
     if commit is None:
         return {"commit": None, "branch": None, "dirty": None}
-    status = _git("status", "--porcelain", "--", *_dirty_pathspecs(exclude))
-    return {
+    specs = _dirty_pathspecs(exclude)
+    changed = _git("diff", "--name-only", "HEAD", "--", *specs)
+    untracked = _git("ls-files", "--others", "--exclude-standard", "--", *specs)
+    state: dict[str, Any] = {
         "commit": commit,
         "branch": _git("rev-parse", "--abbrev-ref", "HEAD"),
-        "dirty": bool(status) if status is not None else None,
+        "dirty": None,
     }
+    if changed is not None and untracked is not None:
+        files = [f for f in (*changed.splitlines(), *untracked.splitlines()) if f]
+        state["dirty"] = bool(files)
+        if files:
+            extra = len(files) - _DIRTY_FILES_MAX
+            state["dirty_files"] = files[:_DIRTY_FILES_MAX] + (
+                [f"… {extra} more"] if extra > 0 else []
+            )
+    state.update(_dvc_lock_state())
+    return state
+
+
+def _dvc_lock_state() -> dict[str, Any]:
+    """What pins the pipeline data when the commit's `dvc.lock` does not.
+
+    The dirty check ignores `dvc.lock` because `dvc repro` rewrites it between
+    stages, so a run can start from a working lock that is not the commit's.
+    Nothing is recorded when the lock is the commit's (the commit pins it).
+    Otherwise:
+
+      * inside `dvc repro` (DVC sets `DVC_STAGE`): `dvc_stage` and `dvc_inputs`,
+        the DVC hash of each of the stage's deps that another stage produced,
+        read from the working lock. These are content addresses in the DVC
+        cache, so they identify the data read whatever is committed later —
+        the lock this stage saw is rewritten when it finishes and never
+        committed as such;
+      * any other run: `dvc_lock`, the git object id of the working lock. That
+        lock is normally the one committed next, and
+        `git log --all --find-object=<id>` finds it.
+    """
+    found = _dvc_spec()
+    if found is None:
+        return {}
+    top, spec = found
+    lock_path = top / "dvc.lock"
+    if not lock_path.is_file():
+        return {}
+    blob = _git("hash-object", "--", str(lock_path))
+    if blob is None or blob == _git("rev-parse", "HEAD:dvc.lock"):
+        return {}
+    stage_name = os.environ.get("DVC_STAGE", "").removeprefix("dvc.yaml:")
+    stage = _stages(spec).get(stage_name)
+    if stage is None:
+        return {"dvc_lock": blob}
+    lock = _load_yaml(lock_path) or {}
+    produced: dict[str, str] = {}
+    for name, entry in (lock.get("stages") or {}).items():
+        wdir = Path((_stages(spec).get(name) or {}).get("wdir", "."))
+        for out in (entry or {}).get("outs") or []:
+            if isinstance(out, dict) and out.get("path") and out.get("md5"):
+                produced[Path(os.path.normpath(wdir / out["path"])).as_posix()] = out["md5"]
+    deps = _declared_paths(stage.get("deps"), Path(stage.get("wdir", ".")))
+    inputs = {p.as_posix(): produced[p.as_posix()] for p in deps if p.as_posix() in produced}
+    return {"dvc_stage": stage_name, "dvc_inputs": inputs}
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +389,43 @@ def environment_state() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# data
+# ---------------------------------------------------------------------------
+
+_DATA_TIMEOUT = 600
+
+
+def data_state() -> dict[str, Any]:
+    """Whether the workspace data matches what git and DVC record (opt-in).
+
+    The commit names a run's inputs — `.dvc` pointers, `dvc.lock`, the run dirs
+    in its overrides — but cannot say the bytes on disk are those: a model
+    overwritten by hand or a partial repro looks the same to git. `dvc status`
+    can, by hashing the tracked data, which is why it is off by default (about
+    12 s on a large project). `in_sync` is None when the check could not run.
+    """
+    top = _git("rev-parse", "--show-toplevel")
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "dvc", "status", "--json"],
+            cwd=top,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_DATA_TIMEOUT,
+        )
+        status = json.loads(r.stdout or "{}") if r.returncode == 0 else None
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        status = None
+    if not isinstance(status, dict):
+        return {"in_sync": None}
+    state: dict[str, Any] = {"in_sync": not status}
+    if status:
+        state["out_of_sync"] = sorted(status)[:_DIRTY_FILES_MAX]
+    return state
+
+
+# ---------------------------------------------------------------------------
 # invocation
 # ---------------------------------------------------------------------------
 
@@ -385,6 +498,7 @@ def write_stamp(
     stats: dict | None = None,
     invocation: dict | None = None,
     git: dict | None = None,
+    data: dict | None = None,
 ) -> Path:
     """Write `_provenance.json` into run_dir and return its path.
 
@@ -392,7 +506,8 @@ def write_stamp(
     successful finish, so its absence means the run did not complete.
 
     `git` is the state the run started from, when the caller took it then;
-    without it the state is taken now.
+    without it the state is taken now. `data` is a `data_state()` result, when
+    the data check was asked for.
     """
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -407,6 +522,8 @@ def write_stamp(
     }
     if invocation is not None:
         stamp["invocation"] = invocation
+    if data is not None:
+        stamp["data"] = data
     path = run_dir / STAMP_FILENAME
     path.write_text(json.dumps(stamp, indent=2) + "\n")
     return path
@@ -438,16 +555,23 @@ class RunStampCallback:
     The git state is taken in on_job_start: the code a run executes is the tree
     it started from. A job that writes tracked files outside its run directory
     (a report it refreshes, say) would otherwise stamp itself dirty.
+
+    `check_data: true` adds the opt-in `data_state()` check, also at job start.
+    Turn it on per run for the ones that matter (a held-out eval, a publication
+    script): `hydra.callbacks.run_stamp.check_data=true`.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, check_data: bool = False) -> None:
+        self.check_data = check_data
         self._git_at_start: dict | None = None
+        self._data_at_start: dict | None = None
 
     def on_job_start(self, config, **kwargs) -> None:
         try:
             self._git_at_start = _run_git_state(self._resolve_output_dir(config))
         except Exception:  # fall back to the state at job end
             self._git_at_start = None
+        self._data_at_start = data_state() if self.check_data else None
 
     def on_job_end(self, config, job_return, **kwargs) -> None:
         # Resolve the run directory from the Hydra config without importing
@@ -455,8 +579,9 @@ class RunStampCallback:
         run_dir = self._resolve_output_dir(config)
         stats = self._extract_stats(job_return)
         git, self._git_at_start = self._git_at_start, None
+        data, self._data_at_start = self._data_at_start, None
         try:
-            write_stamp(run_dir, stats=stats, invocation=invocation_state(), git=git)
+            write_stamp(run_dir, stats=stats, invocation=invocation_state(), git=git, data=data)
         except Exception as exc:  # never let stamping fail the job
             print(f"caster: run-stamp could not be written: {exc}", file=sys.stderr)
         # Announce the run directory on stdout so an agent (or script) can capture
@@ -561,6 +686,9 @@ def main(argv: list[str]) -> int:
     s = sub.add_parser("stamp", help="write _provenance.json into a directory")
     s.add_argument("run_dir")
     s.add_argument("--stats", nargs="*", metavar="KEY=VALUE", help="headline stats to record")
+    s.add_argument(
+        "--check-data", action="store_true", help="record whether data matches DVC (dvc status)"
+    )
     lg = sub.add_parser("ledger", help="regenerate a Markdown experiment ledger from stamps")
     lg.add_argument(
         "--outputs-dir",
@@ -584,7 +712,8 @@ def main(argv: list[str]) -> int:
             print(table, end="")
         return 0
 
-    path = write_stamp(args.run_dir, stats=_parse_stats(args.stats))
+    data = data_state() if args.check_data else None
+    path = write_stamp(args.run_dir, stats=_parse_stats(args.stats), data=data)
     print(f"wrote {path}")
     return 0
 

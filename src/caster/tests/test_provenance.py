@@ -127,6 +127,141 @@ def test_no_dvc_yaml_excludes_nothing_extra(git_project):
     assert P._pipeline_paths() == []
 
 
+def test_clean_state_carries_no_dirty_files_or_lock_id(git_project):
+    """A clean run pays nothing for the diagnostic fields."""
+    _dvc_project(git_project)
+    state = P.git_state()
+    assert state["dirty"] is False
+    assert "dirty_files" not in state and "dvc_lock" not in state
+
+
+def test_dirty_files_name_what_differs(git_project):
+    (git_project / "README.md").write_text("changed\n")
+    (git_project / "new_module.py").write_text("X = 1\n")
+    (git_project / "outputs").mkdir()
+    (git_project / "outputs" / "ignored.json").write_text("{}\n")
+    state = P.git_state()
+    assert state["dirty"] is True
+    assert sorted(state["dirty_files"]) == ["README.md", "new_module.py"]
+
+
+def test_dirty_files_are_capped(git_project, monkeypatch):
+    monkeypatch.setattr(P, "_DIRTY_FILES_MAX", 3)
+    for i in range(5):
+        (git_project / f"m{i}.py").write_text("X = 1\n")
+    files = P.git_state()["dirty_files"]
+    assert len(files) == 4 and files[-1] == "… 2 more"
+
+
+def test_dvc_lock_id_recorded_only_when_lock_differs_from_commit(git_project):
+    """Mid-repro the commit's lock is stale; the id finds the one the run read."""
+    _dvc_project(git_project)
+    (git_project / "dvc.lock").write_text("schema: '2.0'\nstages: {train: {}}\n")
+    state = P.git_state()
+    assert state["dirty"] is False  # dvc.lock is pipeline-managed
+    blob = subprocess.run(
+        ["git", "hash-object", "dvc.lock"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    assert state["dvc_lock"] == blob
+    subprocess.run(["git", "commit", "-qam", "lock"], cwd=git_project, check=True)
+    found = subprocess.run(
+        ["git", "log", "--format=%s", f"--find-object={blob}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert found == ["lock"]  # the recorded id locates the commit carrying that lock
+    assert "dvc_lock" not in P.git_state()
+
+
+STAGE_YAML = """
+stages:
+  prepare:
+    cmd: python prepare.py
+    outs:
+      - data/prepared
+  train:
+    cmd: python train.py
+    deps:
+      - train.py
+      - data/prepared
+    outs:
+      - models/model.bin
+"""
+
+STAGE_LOCK = """schema: '2.0'
+stages:
+  prepare:
+    cmd: python prepare.py
+    outs:
+    - path: data/prepared
+      hash: md5
+      md5: 3e63c4c0fe667afe93999601bbf33c51.dir
+"""
+
+
+def test_dvc_stage_records_the_inputs_it_read(git_project, monkeypatch):
+    """Inside a repro the lock a stage saw is rewritten when it finishes and is
+    never committed, so the stamp carries the DVC hashes of its inputs instead."""
+    (git_project / "dvc.yaml").write_text(STAGE_YAML)
+    (git_project / "train.py").write_text("X = 1\n")
+    subprocess.run(["git", "add", "-A"], cwd=git_project, check=True)
+    subprocess.run(["git", "commit", "-qm", "pipeline"], cwd=git_project, check=True)
+    (git_project / "dvc.lock").write_text(STAGE_LOCK)  # written by `prepare`
+    monkeypatch.setenv("DVC_STAGE", "train")
+    state = P.git_state()
+    assert state["dirty"] is False
+    assert state["dvc_stage"] == "train"
+    # train.py is code, pinned by the commit; only the produced input is listed
+    assert state["dvc_inputs"] == {"data/prepared": "3e63c4c0fe667afe93999601bbf33c51.dir"}
+    assert "dvc_lock" not in state
+
+
+def _dvc(project, *args):
+    subprocess.run(
+        [sys.executable, "-m", "dvc", *args], cwd=project, check=True, capture_output=True
+    )
+
+
+def test_data_state_reports_workspace_against_dvc(git_project):
+    _dvc(git_project, "init", "-q")
+    (git_project / "data.csv").write_text("a\n1\n")
+    _dvc(git_project, "add", "data.csv")
+    subprocess.run(["git", "add", "-A"], cwd=git_project, check=True)
+    subprocess.run(["git", "commit", "-qm", "data"], cwd=git_project, check=True)
+    assert P.data_state() == {"in_sync": True}
+    (git_project / "data.csv").write_text("a\n2\n")
+    state = P.data_state()
+    assert state["in_sync"] is False and state["out_of_sync"] == ["data.csv.dvc"]
+
+
+def test_data_state_unknown_outside_a_dvc_repo(git_project):
+    assert P.data_state() == {"in_sync": None}
+
+
+def test_data_check_is_opt_in(git_project, run_dir, monkeypatch):
+    calls = []
+    monkeypatch.setattr(P, "data_state", lambda: calls.append(1) or {"in_sync": True})
+    os.chdir(run_dir)
+    for cb, expected in (
+        (P.RunStampCallback(), None),
+        (P.RunStampCallback(check_data=True), {"in_sync": True}),
+    ):
+        cb.on_job_start(config=None)
+        cb.on_job_end(config=None, job_return=None)
+        assert read_stamp(run_dir).get("data") == expected
+    assert calls == [1]
+
+
+def test_cli_check_data(git_project, monkeypatch):
+    monkeypatch.setattr(P, "data_state", lambda: {"in_sync": False, "out_of_sync": ["train"]})
+    out = git_project / "outputs" / "run3"
+    assert P.main(["stamp", str(out), "--check-data"]) == 0
+    assert read_stamp(out)["data"]["out_of_sync"] == ["train"]
+    P.main(["stamp", str(out)])
+    assert "data" not in read_stamp(out)
+
+
 def test_environment_records_lock_hash_and_snapshot_when_unverifiable(git_project):
     """The fixture's uv.lock has no pyproject, so uv's checks error: the verdicts
     are None and the package snapshot is kept."""
