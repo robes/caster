@@ -45,9 +45,19 @@ run's headline stats — no tracking server required:
   "environment": {
     "python": "3.11.8",
     "platform": "Linux-6.5.0-x86_64",
+    "uv_version": "0.12.10",
     "uv_lock_sha256": "a1b2c3…",
-    "sync_mode": "frozen",
-    "packages_observed": ["torch==2.4.0", "numpy==1.26.4", "…"]
+    "lock_current": true,
+    "env_synced": true,
+    "sync_selection": ["--all-extras"],
+    "sync_drift": null
+  },
+  "invocation": {
+    "script": "scripts/train.py",
+    "config_name": "config",
+    "overrides": ["model.C=0.5"],
+    "command": "python scripts/train.py model.C=0.5",
+    "multirun": false
   },
   "completed": true,
   "created_at": "2026-05-29T18:04:11Z",
@@ -55,36 +65,47 @@ run's headline stats — no tracking server required:
 }
 ```
 
-- **`git`** — the commit is the reproducibility anchor; `dirty: true` is a loud
-  signal that uncommitted changes were in effect and the run is not exactly
-  reproducible.
-- **`environment`** — records the *binding between the run and the lockfile*,
-  not just a package dump. `uv.lock` is a **declarative resolution** of your
-  `pyproject.toml` constraints into a cross-platform dependency graph — it
-  answers "what would a clean install produce?", deliberately independent of any
-  one machine. It is the wrong object to overwrite with run state, and uv offers
-  no mode to make it record the live environment (that would invert what a
-  lockfile is). So the stamp witnesses the environment separately, in three
-  layers of decreasing strength:
-  - **`uv_lock_sha256`** — the SHA-256 of the committed `uv.lock`. This ties the
-    run to the *exact* lock it was meant to use. Because `uv.lock` is committed,
-    the git commit already pins it; the hash is a cheap cross-check that catches
-    a lock edited-but-not-committed, and is the strongest single environment
-    claim.
-  - **`sync_mode`** — how the environment was established: `frozen` / `locked`
-    (uv guaranteed the venv matches the lock without re-resolving — a strong
-    claim), or `unlocked` (a plain `uv run`/manual setup that *may* have drifted).
-    This says whether the lock hash can be trusted as the environment.
-  - **`packages_observed`** — the ground-truth snapshot from `uv pip freeze` (or
-    `importlib.metadata` if uv isn't the runner). With the two fields above
-    present, its job is narrowed: it is the **tripwire** that catches the case
-    `sync_mode` can't — an ad-hoc `pip install` into the venv, a stale lock, or a
-    run made outside the managed environment. When `packages_observed` disagrees
-    with what the lock would install, *this* is what produced the result.
+- **`git`** — the commit is the reproducibility anchor; `dirty: true` means
+  uncommitted code was in effect and the run is not exactly reproducible.
+  `dirty` is about code: it ignores the output roots (`outputs/`, `multirun/`,
+  the run's own directory) and what `dvc repro` writes between stages
+  (`dvc.lock` and the outputs the root `dvc.yaml` declares), but still sees an
+  untracked source file. Under Hydra it is taken when the job starts, so a run
+  that rewrites a tracked report does not flag itself; the `caster provenance
+  stamp` CLI takes it at stamp time. Two fields appear only when needed:
+  - **`dirty_files`** — when dirty, the paths that differ.
+  - **`dvc_stage` + `dvc_inputs`** (inside `dvc repro`) or **`dvc_lock`**
+    (otherwise) — when the working `dvc.lock` is not the commit's, what pins the
+    data the run read: the DVC hashes of the stage's inputs, or the lock's git
+    object id, which `git log --all --find-object=<id>` finds once committed.
+- **`environment`** — the binding between the run and `uv.lock`, not a package
+  dump. `uv.lock` is a declarative resolution of your `pyproject.toml`: it says
+  what a clean install *would* produce, so the stamp records what the run
+  actually *had*:
+  - **`uv_lock_sha256`** — the lock's hash, a cross-check on the commit.
+  - **`lock_current`** — `uv lock --check`: the lock matches `pyproject.toml`.
+  - **`env_synced`** / **`sync_selection`** — `uv sync --frozen --check` against
+    the running interpreter: the venv matches the lock exactly for that extras
+    selection (the default, then `--all-extras`). `null` means the check could
+    not run.
+  - **Package versions only where the lock can't supply them** — none when
+    synced; otherwise **`sync_drift`** (uv's diff) and **`drift_installed`**
+    (the installed versions of those packages); the full **`packages_observed`**
+    when the check could not run or `uv.lock` is not committed unmodified.
 
+  None of these sees a file edited inside `site-packages`. Stamps written
+  before these checks carry `sync_mode` and a full `packages_observed` instead.
   The principle: the lockfile reproduces the *intended* environment; the stamp
-  witnesses the *actual* one. Neither substitutes for the other, which is exactly
-  why a run-stamp is needed at all.
+  witnesses the *actual* one.
+- **`invocation`** — the script, `config_name`, this job's own `overrides`
+  (Hydra's per-job list, so correct under `--multirun`), and a single-job
+  `command`. With the commit, enough to recompose the config without
+  `.hydra/`. Hydra runs only.
+- **`data`** — *opt-in*: `dvc status` at job start says whether the data on disk
+  matches what git and DVC record (`in_sync`, plus `out_of_sync` entries). It
+  hashes the tracked data, so it can be slow; turn it on for the runs that
+  matter, such as the held-out eval, with
+  `hydra.callbacks.run_stamp.check_data=true` (or `--check-data` on the CLI).
 - **`completed`** — written only on success. Its *absence* means the run did not
   finish: "did this run complete?" is a file-existence check, with no status
   field to misread.
@@ -99,31 +120,19 @@ Python packages only; system libraries and hardware are out of scope for the
 stamp, the lock, and the freeze alike. Do not oversell any of them; expect
 metrics to match within ~1–2 decimal places, not bit-exactly.
 
-### Capturing the environment fields
+### How the environment is checked
 
-The callback records the lock binding and the observed snapshot like this:
+The sync verdicts are not taken from how the run was launched — that cannot be
+observed from inside the process. The stamp asks uv, read-only and offline:
 
-```python
-import hashlib, pathlib, subprocess
-
-def _uv_lock_sha256():
-    lock = pathlib.Path("uv.lock")
-    return hashlib.sha256(lock.read_bytes()).hexdigest() if lock.exists() else None
-
-def _observed_packages():
-    """Ground-truth snapshot of what is actually importable."""
-    out = subprocess.run(["uv", "pip", "freeze"], capture_output=True, text=True)
-    if out.returncode == 0:
-        return out.stdout.splitlines()
-    import importlib.metadata as m            # fallback if uv isn't the runner
-    return sorted(f"{d.metadata['Name']}=={d.version}"
-                  for d in m.distributions() if d.metadata["Name"])
+```bash
+uv lock --check --offline                            # -> lock_current
+UV_PROJECT_ENVIRONMENT=<running venv> \
+  uv sync --frozen --check --offline [--all-extras]  # -> env_synced
 ```
 
-`sync_mode` is read from how the run was launched — Caster sets an environment
-variable (`CASTER_SYNC_MODE`) in the `uv sync --frozen` / `--locked` entry
-points it ships, defaulting to `unlocked` when unset, so an out-of-band launch
-is recorded as such rather than silently claiming `frozen`.
+Exit 0 is a pass, 1 is drift, anything else is `null`. Both take well under a
+second.
 
 ## How it fires — without anyone remembering
 
@@ -144,8 +153,8 @@ hydra:
 Hydra invokes `on_job_start` / `on_job_end` for every job, so the stamp is
 written for **every** run, sweep included, with nothing added to your training
 code and nothing to remember at the command line. The completion marker is
-written in `on_job_end`, so a crash leaves the start-of-run fields without a
-`completed` flag — exactly the failure signal you want.
+written in `on_job_end`, so a crashed run has no `_provenance.json` at all —
+exactly the failure signal you want.
 
 This is the answer to "does the user have to remember?": yes, exactly once, in
 config, and never again.
@@ -201,22 +210,21 @@ best done as a Hydra app so the split-properties callback fires; the example
 
 ```bash
 # 1. Read what produced the artifact.
-cat <run_dir>/_provenance.json          # commit, environment, stats
-cat <run_dir>/.hydra/config.yaml         # the exact composed config
+cat <run_dir>/_provenance.json          # commit, environment, invocation, stats
+#   invocation.command re-runs that job; invocation.overrides + the commit
+#   recompose its config, so .hydra/config.yaml need not have been kept.
 
 # 2. Restore code state.
 git checkout <commit-from-stamp>
 
-# 3. Recreate the environment.
-#   Check sync_mode and uv_lock_sha256 in the stamp first:
-#     - sync_mode "frozen"/"locked" + matching lock hash -> a clean restore is faithful:
-uv sync --locked                         # or --frozen
-#     - sync_mode "unlocked", or packages_observed disagrees with the lock ->
-#       the stamp is ground truth; reconcile by hand against packages_observed.
-#   Confirm the lock you have is the one the run used:
-#     sha256sum uv.lock   # compare to environment.uv_lock_sha256
+# 3. Recreate the environment, with the stamp's sync_selection.
+uv sync --frozen                         # e.g. --all-extras
+#   env_synced false -> then apply sync_drift, at the drift_installed versions.
+#   packages_observed present -> it is ground truth; reconcile against it.
+#   Confirm the lock is the run's: sha256sum uv.lock = environment.uv_lock_sha256
 
-# 4. Restore data to the run's version.
+# 4. Restore data to the run's version (with dvc_inputs / dvc_lock in the
+#    stamp, the commit's dvc.lock is not the one the run read; see `git` above).
 dvc checkout                             # or `dvc pull` from the remote
 
 # 5. Re-run into a fresh output dir and compare.
