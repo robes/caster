@@ -165,14 +165,11 @@ directory:
   "environment": {
     "python": "3.11.8",
     "platform": "…",
-    "uv_version": "0.12.10",
     "uv_lock_sha256": "a1b2c3…",
-    "lock_current": true,
     "env_synced": true,
-    "sync_selection": [],
-    "sync_drift": null
+    "…": "…"
   },
-  "invocation": { "script": "scripts/train.py", "config_name": "config", "overrides": [], "…": "…" },
+  "invocation": { "script": "scripts/train.py", "overrides": [], "…": "…" },
   "completed": true,
   "created_at": "2026-05-29T18:04:11Z",
   "stats": { "val_accuracy": 0.91 }
@@ -196,8 +193,8 @@ completion-failure signal, exactly the property the layout relies on.
 Recorded timestamps are UTC, ISO-8601, `Z`-suffixed. Hydra's directory-name
 timestamp is local time, since it exists for the developer organizing
 `outputs/`. The full design — including why the environment is recorded as a
-lockfile hash + sync mode + observed-package tripwire rather than a bare package
-dump — is in [`docs/PROVENANCE.md`](docs/PROVENANCE.md).
+lockfile hash + uv's check against it rather than a bare package dump — is in
+[`docs/PROVENANCE.md`](docs/PROVENANCE.md).
 
 **Non-Hydra stages stamp themselves.** A pipeline stage that does not go through
 Hydra (a plain script driven by a DVC stage) writes its stamp by appending one

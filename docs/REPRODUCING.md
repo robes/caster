@@ -50,8 +50,9 @@ uv sync --extra dev --extra packaging        # recreate from the pinned deps
 ```
 
 Cross-check against the `environment` block in `_provenance.json` (Python
-version, key package versions, the recorded `uv_lock_sha256`). Mismatches here
-are the first thing to suspect if results later diverge.
+version, the recorded `uv_lock_sha256`, and `env_synced` with any drifted
+packages). Mismatches here are the first thing to suspect if results later
+diverge.
 
 ## 4. Restore the data — do **not** let the pipeline re-acquire it
 
