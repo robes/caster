@@ -51,6 +51,11 @@ src = ["src", "scripts"]
 select = ["E", "F", "I", "B", "UP"]
 ignore = ["E501"]  # line length handled by the formatter
 
+[tool.ruff.lint.per-file-ignores]
+# Template code targets the template's Python floor (3.10); a project with a
+# higher floor shouldn't rewrite it, or every template update re-conflicts.
+"src/caster/**" = ["UP"]
+
 [tool.pytest.ini_options]
 testpaths = ["src/caster/tests"]
 pythonpath = ["src"]
