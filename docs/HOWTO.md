@@ -137,6 +137,9 @@ placeholders are not real runs:
    - `run_dir` → the train run (supplies the `.hydra` config + `_provenance.json`)
    - `checkpoint_path` → the canonical `models/model.<ext>` from `dvc repro`
    - `eval_dir` → the held-out (`+eval=holdout`) run from step 1
+   - `datasets` → each dataset's `disposition` (`reference`, `embed` or `omit`),
+     checked against its record's `type`; see
+     [PACKAGING](PACKAGING.md#dataset-disposition)
 
 The packager refuses if `run_dir` does not exist and warns loudly if it lacks the
 config or stamp — a bundle without its provenance chain is not a release.

@@ -223,6 +223,8 @@ with the how-to; for depth on any one duty, its own doc:
   release bundle back to a reproduced, verified result.
 - [`COMMANDS.md`](docs/COMMANDS.md) — the `caster` command reference: every
   command and its arguments, in one table.
+- [`UPDATING.md`](docs/UPDATING.md) — taking later template changes into a
+  project made from Caster.
 
 The three duties:
 

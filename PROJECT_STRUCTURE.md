@@ -48,6 +48,7 @@ project/
 ├── docs/                        # reference documentation
 │   ├── HOWTO.md                 # end-to-end: data → experiments → release, for your project
 │   ├── REPRODUCING.md           # the reverse trip: from a release bundle to a reproduced result
+│   ├── UPDATING.md              # taking later template changes into your project
 │   ├── DATA_SOURCES.md          # duty 1 — define your data; Croissant convention
 │   ├── PROVENANCE.md            # duty 2 — record your workflow; git+Hydra+DVC + run-stamp
 │   ├── PACKAGING.md             # duty 3 — release; GTO + RO-Crate/BagIt
