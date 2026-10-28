@@ -45,9 +45,19 @@ run's headline stats — no tracking server required:
   "environment": {
     "python": "3.11.8",
     "platform": "Linux-6.5.0-x86_64",
+    "uv_version": "0.12.10",
     "uv_lock_sha256": "a1b2c3…",
-    "sync_mode": "frozen",
-    "packages_observed": ["torch==2.4.0", "numpy==1.26.4", "…"]
+    "lock_current": true,
+    "env_synced": true,
+    "sync_selection": ["--all-extras"],
+    "sync_drift": null
+  },
+  "invocation": {
+    "script": "scripts/train.py",
+    "config_name": "config",
+    "overrides": ["model.C=0.5"],
+    "command": "python scripts/train.py model.C=0.5",
+    "multirun": false
   },
   "completed": true,
   "created_at": "2026-05-29T18:04:11Z",
@@ -57,34 +67,78 @@ run's headline stats — no tracking server required:
 
 - **`git`** — the commit is the reproducibility anchor; `dirty: true` is a loud
   signal that uncommitted changes were in effect and the run is not exactly
-  reproducible.
+  reproducible. `dirty` is about the *code*, so three kinds of file a run or
+  pipeline writes are kept out of it, while anything else — including an
+  untracked source module the run imported — still counts:
+  - the output roots (`outputs/`, `multirun/`, and the run's own top-level
+    directory), where this run and earlier runs' stamps live;
+  - what `dvc repro` writes between stages: `dvc.lock`, and the `outs`,
+    `metrics` and `plots` the root `dvc.yaml` declares (with the `.gitignore`
+    DVC keeps beside a cached out). Without this, every stage after the first in
+    a repro stamps itself dirty. Templated (`${...}`) and `foreach`/`matrix`
+    paths are not resolved and stay in the check; `dvc.yaml` itself always
+    counts;
+  - tracked files the run itself rewrites (a report refreshed under
+    `reports/`): under Hydra the state is taken when the job *starts*. The
+    `caster.provenance stamp` CLI, which runs after the command, takes it at
+    stamp time.
 - **`environment`** — records the *binding between the run and the lockfile*,
   not just a package dump. `uv.lock` is a **declarative resolution** of your
   `pyproject.toml` constraints into a cross-platform dependency graph — it
   answers "what would a clean install produce?", deliberately independent of any
   one machine. It is the wrong object to overwrite with run state, and uv offers
   no mode to make it record the live environment (that would invert what a
-  lockfile is). So the stamp witnesses the environment separately, in three
-  layers of decreasing strength:
+  lockfile is). So the stamp witnesses the environment separately:
   - **`uv_lock_sha256`** — the SHA-256 of the committed `uv.lock`. This ties the
     run to the *exact* lock it was meant to use. Because `uv.lock` is committed,
     the git commit already pins it; the hash is a cheap cross-check that catches
-    a lock edited-but-not-committed, and is the strongest single environment
-    claim.
-  - **`sync_mode`** — how the environment was established: `frozen` / `locked`
-    (uv guaranteed the venv matches the lock without re-resolving — a strong
-    claim), or `unlocked` (a plain `uv run`/manual setup that *may* have drifted).
-    This says whether the lock hash can be trusted as the environment.
-  - **`packages_observed`** — the ground-truth snapshot from `uv pip freeze` (or
-    `importlib.metadata` if uv isn't the runner). With the two fields above
-    present, its job is narrowed: it is the **tripwire** that catches the case
-    `sync_mode` can't — an ad-hoc `pip install` into the venv, a stale lock, or a
-    run made outside the managed environment. When `packages_observed` disagrees
-    with what the lock would install, *this* is what produced the result.
+    a lock edited-but-not-committed.
+  - **`lock_current`** — uv's verdict from `uv lock --check`: the lock is up to
+    date with `pyproject.toml` (what `uv sync --locked` asserts).
+  - **`env_synced`** and **`sync_selection`** — uv's verdict from
+    `uv sync --frozen --check`, run against the interpreter executing the job:
+    the environment matches the lock *exactly* for that extras selection. The
+    check is exact in both directions — an ad-hoc `pip install` into the venv
+    fails it, and so does a selection that differs from what was synced — so it
+    cannot pass by accident. Caster tries the default selection, then
+    `--all-extras`. When neither matches, **`sync_drift`** keeps uv's diff from
+    the nearer one.
+  - **Observed packages, only where the lock can't supply them.** With
+    `uv.lock` committed and unmodified, the locked set is reconstructible from
+    the lock at the commit and `sync_selection`: `uv export --frozen` lists
+    every platform's packages, and evaluating each line's markers for the
+    recorded `python` and `platform` leaves exactly the installed set. So:
+    - `env_synced: true` — nothing more is stored;
+    - `env_synced: false` — **`drift_installed`** holds the installed version
+      of each package in `sync_drift` (uv's drift line names the *locked*
+      version, not the installed one). Lock + selection + `drift_installed` is
+      the environment;
+    - `env_synced: null`, or `uv.lock` untracked or modified — the full
+      **`packages_observed`** snapshot from `uv pip freeze` (or
+      `importlib.metadata` if uv isn't the runner), since the lock can't be
+      recovered from the commit.
+
+  A `null` verdict means the check could not run (uv missing, no project, an
+  error), and keeps the full snapshot. None of these sees a file edited inside
+  `site-packages`.
+
+  > These verdict fields replaced a `sync_mode` label read from a
+  > `CASTER_SYNC_MODE` environment variable that nothing set, so every stamp
+  > said `unlocked`. Stamps written before the change carry `sync_mode` and a
+  > full `packages_observed`.
 
   The principle: the lockfile reproduces the *intended* environment; the stamp
   witnesses the *actual* one. Neither substitutes for the other, which is exactly
   why a run-stamp is needed at all.
+- **`invocation`** — what was run: the script, the `config_name`, this job's
+  `overrides`, a reconstructed single-job `command`, and whether it came from a
+  sweep. Hydra composition is a pure function of (config tree, `config_name`,
+  `overrides`), and the commit pins the config tree — so these few fields say
+  what a run used without `.hydra/config.yaml` being committed. Recorded only
+  for Hydra runs; the `caster.provenance stamp` CLI path has no invocation to
+  record. The overrides
+  are Hydra's own per-job list, not `sys.argv`, which under `--multirun` holds
+  the whole sweep expression for every job.
 - **`completed`** — written only on success. Its *absence* means the run did not
   finish: "did this run complete?" is a file-existence check, with no status
   field to misread.
@@ -104,7 +158,7 @@ metrics to match within ~1–2 decimal places, not bit-exactly.
 The callback records the lock binding and the observed snapshot like this:
 
 ```python
-import hashlib, pathlib, subprocess
+import hashlib, pathlib, subprocess, sys
 
 def _uv_lock_sha256():
     lock = pathlib.Path("uv.lock")
@@ -112,7 +166,7 @@ def _uv_lock_sha256():
 
 def _observed_packages():
     """Ground-truth snapshot of what is actually importable."""
-    out = subprocess.run(["uv", "pip", "freeze"], capture_output=True, text=True)
+    out = subprocess.run(["uv", "pip", "freeze", "--python", sys.executable], capture_output=True, text=True)
     if out.returncode == 0:
         return out.stdout.splitlines()
     import importlib.metadata as m            # fallback if uv isn't the runner
@@ -120,10 +174,19 @@ def _observed_packages():
                   for d in m.distributions() if d.metadata["Name"])
 ```
 
-`sync_mode` is read from how the run was launched — Caster sets an environment
-variable (`CASTER_SYNC_MODE`) in the `uv sync --frozen` / `--locked` entry
-points it ships, defaulting to `unlocked` when unset, so an out-of-band launch
-is recorded as such rather than silently claiming `frozen`.
+The sync verdicts are not taken from how the run was launched — that cannot be
+observed from inside the process, and a label set by the launcher would only be
+as honest as the launcher. Instead `lock_check()` asks uv, read-only and
+offline:
+
+```python
+env = {**os.environ, "UV_PROJECT_ENVIRONMENT": sys.prefix}   # the running venv
+uv lock --check --offline                                    # -> lock_current
+uv sync --frozen --check --offline [--all-extras]            # -> env_synced
+```
+
+Exit 0 is a pass, 1 is drift, anything else is `null`. Both checks take tens of
+milliseconds.
 
 ## How it fires — without anyone remembering
 
@@ -201,18 +264,22 @@ best done as a Hydra app so the split-properties callback fires; the example
 
 ```bash
 # 1. Read what produced the artifact.
-cat <run_dir>/_provenance.json          # commit, environment, stats
-cat <run_dir>/.hydra/config.yaml         # the exact composed config
+cat <run_dir>/_provenance.json          # commit, environment, invocation, stats
+#   invocation.command re-runs that job; invocation.overrides + the commit
+#   recompose its config, so .hydra/config.yaml need not have been kept.
 
 # 2. Restore code state.
 git checkout <commit-from-stamp>
 
 # 3. Recreate the environment.
-#   Check sync_mode and uv_lock_sha256 in the stamp first:
-#     - sync_mode "frozen"/"locked" + matching lock hash -> a clean restore is faithful:
-uv sync --locked                         # or --frozen
-#     - sync_mode "unlocked", or packages_observed disagrees with the lock ->
-#       the stamp is ground truth; reconcile by hand against packages_observed.
+#   Check env_synced and uv_lock_sha256 in the stamp first:
+#     - env_synced true + matching lock hash + dirty false -> a clean restore is
+#       faithful, with the recorded selection:
+uv sync --frozen                         # plus the stamp's sync_selection
+#     - env_synced false -> the same restore, then install drift_installed over
+#       it (sync_drift says what differed from the lock).
+#     - env_synced null, or packages_observed present -> packages_observed is
+#       ground truth; reconcile by hand against it.
 #   Confirm the lock you have is the one the run used:
 #     sha256sum uv.lock   # compare to environment.uv_lock_sha256
 

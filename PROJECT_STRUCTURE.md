@@ -165,10 +165,14 @@ directory:
   "environment": {
     "python": "3.11.8",
     "platform": "…",
+    "uv_version": "0.12.10",
     "uv_lock_sha256": "a1b2c3…",
-    "sync_mode": "frozen",
-    "packages_observed": ["…"]
+    "lock_current": true,
+    "env_synced": true,
+    "sync_selection": [],
+    "sync_drift": null
   },
+  "invocation": { "script": "scripts/train.py", "config_name": "config", "overrides": [], "…": "…" },
   "completed": true,
   "created_at": "2026-05-29T18:04:11Z",
   "stats": { "val_accuracy": 0.91 }
