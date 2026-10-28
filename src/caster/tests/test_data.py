@@ -22,6 +22,8 @@ def test_emit_produces_valid_croissant(git_project):
         sources / "brain_mri.yaml",
         """
 name: brain_mri
+type: reference
+format: other
 description: T1 brain MRI volumes.
 url: https://doi.org/10.5281/zenodo.0000000
 license: CC-BY-4.0
@@ -39,6 +41,7 @@ distribution:
     assert doc["distribution"][0]["encodingFormat"] == "application/zip"  # inferred
     assert doc["distribution"][0]["sha256"].startswith("3a7bd3")
     assert D.validate_record(out) == []  # round-trips clean
+    assert (doc["type"], doc["format"]) == ("reference", "other")  # carried through
 
 
 def test_emit_local_distribution_needs_no_url(git_project):
@@ -48,6 +51,7 @@ def test_emit_local_distribution_needs_no_url(git_project):
         sources / "cohort.yaml",
         """
 name: cohort
+type: local
 description: In-house cohort, not redistributable.
 license: proprietary
 distribution: local
@@ -66,6 +70,7 @@ def test_emit_rejects_distribution_without_url(git_project):
         sources / "bad.yaml",
         """
 name: bad
+type: local
 description: missing url.
 distribution:
   - name: bad.zip
@@ -84,6 +89,7 @@ def test_emit_coerces_numeric_sha(git_project):
         sources / "n.yaml",
         """
 name: n
+type: local
 description: numeric-looking hash.
 url: https://example.org/n.bin
 distribution:
@@ -115,6 +121,7 @@ def test_validate_passes_when_tracked_dataset_documented(git_project):
         sources / "ds.yaml",
         """
 name: ds
+type: local
 description: a documented dataset.
 license: CC0-1.0
 distribution: local
@@ -148,3 +155,54 @@ def test_validate_json_envelope(git_project, capsys):
     assert obj["command"] == "validate"
     assert obj["ok"] == (rc == 0)
     assert "problems" in obj
+
+
+def test_emit_validates_croissant_snapshot_without_overwriting(git_project, capsys):
+    sources = git_project / "data_sources"
+    sources.mkdir()
+    _write_yaml(
+        sources / "hf.yaml",
+        "name: hf\ntype: reference\nformat: croissant\nurl: https://example.org/hf\n",
+    )
+    with pytest.raises(FileNotFoundError, match="download its upstream record"):
+        D.emit("hf", sources_dir=sources)
+
+    _write_yaml(
+        sources / "src.yaml",
+        "name: hf\ntype: local\nurl: https://hf.co/x\ndescription: upstream.\n",
+    )
+    upstream = D.emit("src", sources_dir=sources).read_text()
+    snapshot = sources / "hf.json"
+    snapshot.write_text(upstream)
+    assert D.emit("hf", sources_dir=sources) == snapshot
+    assert snapshot.read_text() == upstream  # validated, not regenerated
+    assert "references 'https://example.org/hf'" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "text, message",
+    [
+        ("name: x\n", "'type' must be one of"),
+        ("name: x\ntype: reference\nformat: bdbag\n", "needs a 'url'"),
+        ("name: x\ntype: reference\nurl: https://e.org\n", "needs 'format'"),
+    ],
+)
+def test_type_rules(git_project, text, message):
+    sources = git_project / "data_sources"
+    sources.mkdir()
+    _write_yaml(sources / "x.yaml", text)
+    with pytest.raises(ValueError, match=message):
+        D.emit("x", sources_dir=sources)
+    assert any(message in p for p in D.validate(git_project / "data", sources))
+
+
+def test_validate_wants_a_yaml_beside_each_record(git_project):
+    sources = git_project / "data_sources"
+    sources.mkdir()
+    _write_yaml(sources / "ds.yaml", "name: ds\ntype: local\ndescription: d.\n")
+    (sources / "orphan.json").write_text(D.emit("ds", sources_dir=sources).read_text())
+    problems = D.validate(git_project / "data", sources)
+    assert problems == [
+        "orphan.json: add orphan.yaml stating its type (a downloaded "
+        "Croissant record is 'type: reference', 'format: croissant')"
+    ]

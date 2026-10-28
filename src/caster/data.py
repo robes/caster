@@ -4,17 +4,26 @@ Caster keeps one Croissant record per external dataset under `data_sources/`.
 This module is the small amount of code that convention needs — everything that
 touches the Croissant *format* itself is delegated to the `mlcroissant` library.
 
-  * `validate` — run `data_sources/` records through mlcroissant's validation,
-    and check that every DVC-tracked dataset has a record (the coverage rule).
-    Caster does not write its own Croissant validator; it calls mlcroissant.
+Every dataset has a `<name>.yaml` that states its source type:
 
-  * `emit` — turn a lightweight YAML into a Croissant JSON-LD file by mapping a
-    handful of familiar keys onto mlcroissant's builder API. It covers the
-    common flat metadata a research dataset needs (name, description, license,
-    citation, distribution, provenance prose). It deliberately does NOT author
-    rich RecordSet/Field structure — for per-column types and nested relations,
-    use the MLCommons Croissant editor and load emit's output as a starting
-    point.
+  * `reference` — published elsewhere; `url` (a DOI or URL) is how a reader
+    finds and obtains it. `format` says what they get there: `croissant`,
+    `bdbag`, `rocrate` or `other`.
+  * `local` — produced by the project: collected, curated, privately acquired
+    or generated. Nothing public to point at.
+
+  * `validate` — check each YAML's type, run the Croissant records through
+    mlcroissant, and check that every DVC-tracked dataset has a record (the
+    coverage rule). Caster does not write its own Croissant validator.
+
+  * `emit` — turn the YAML into a Croissant JSON-LD file by mapping a handful
+    of familiar keys onto mlcroissant's builder API. It covers the common flat
+    metadata a research dataset needs (name, description, license, citation,
+    distribution, provenance prose). It deliberately does NOT author rich
+    RecordSet/Field structure — for that, use the MLCommons Croissant editor
+    and load emit's output as a starting point. For `format: croissant` the JSON
+    is the upstream record, downloaded and committed; emit validates it and
+    never overwrites it.
 
 CLI:
     python -m caster.data validate [--data-dir data] [--sources-dir data_sources]
@@ -33,6 +42,8 @@ from caster._cli import emit_json, info
 
 DATA_DIR = "data"
 SOURCES_DIR = "data_sources"
+SOURCE_TYPES = ("reference", "local")
+FORMATS = ("croissant", "bdbag", "rocrate", "other")
 
 
 def _require_mlcroissant():
@@ -138,7 +149,7 @@ def _build_metadata(spec: dict):
 
     # Preserve prose and any unmapped keys so the record stays faithful.
     extra = {}
-    for key in ("provenance", "fetch", "notes"):
+    for key in ("type", "format", "provenance", "fetch", "notes"):
         if spec.get(key):
             extra[key] = spec[key]
 
@@ -159,29 +170,67 @@ def _build_metadata(spec: dict):
     return mlc.Metadata(**kwargs)
 
 
+def load_spec(name: str, sources_dir: str | Path = SOURCES_DIR) -> dict:
+    """Read `<sources_dir>/<name>.yaml`."""
+    yaml_path = Path(sources_dir) / f"{name}.yaml"
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"{yaml_path} not found.")
+    return yaml.safe_load(yaml_path.read_text()) or {}
+
+
+def check_spec(spec: dict, label: str) -> list[str]:
+    """The source-type rules for one YAML. Returns problems (empty == ok)."""
+    kind = spec.get("type")
+    if kind not in SOURCE_TYPES:
+        return [f"{label}: 'type' must be one of {', '.join(SOURCE_TYPES)} (got {kind!r})"]
+    problems = []
+    if kind == "reference":
+        if not spec.get("url"):
+            problems.append(f"{label}: a reference needs a 'url' (DOI or URL)")
+        if spec.get("format") not in FORMATS:
+            problems.append(
+                f"{label}: a reference needs 'format', one of {', '.join(FORMATS)} "
+                f"(got {spec.get('format')!r})"
+            )
+    return problems
+
+
 def emit(name: str, sources_dir: str | Path = SOURCES_DIR) -> Path:
     """Read `<sources_dir>/<name>.yaml`, write `<sources_dir>/<name>.json`
-    (Croissant JSON-LD), and validate the result. Returns the JSON path."""
-    sources_dir = Path(sources_dir)
-    yaml_path = sources_dir / f"{name}.yaml"
-    if not yaml_path.exists():
-        raise FileNotFoundError(f"emit: {yaml_path} not found.")
-    spec = yaml.safe_load(yaml_path.read_text()) or {}
+    (Croissant JSON-LD), and validate the result. Returns the JSON path.
 
-    metadata = _build_metadata(spec)
-    json_path = sources_dir / f"{name}.json"
-
+    For `format: croissant` the JSON is the upstream record: it is validated,
+    not written."""
     import json as _json
 
-    json_path.write_text(_json.dumps(metadata.to_json(), indent=2) + "\n")
+    sources_dir = Path(sources_dir)
+    spec = load_spec(name, sources_dir)
+    problems = check_spec(spec, f"{name}.yaml")
+    if problems:
+        raise ValueError("emit: " + "; ".join(problems))
+    json_path = sources_dir / f"{name}.json"
+
+    if spec.get("format") == "croissant":
+        if not json_path.exists():
+            raise FileNotFoundError(
+                f"emit: {name} is format 'croissant'; download its upstream record to "
+                f"{json_path} (emit does not generate one)."
+            )
+        upstream = (_json.loads(json_path.read_text()) or {}).get("url")
+        if upstream and upstream != spec.get("url"):
+            info(
+                f"caster: note: {json_path.name} has url {upstream!r}; "
+                f"{name}.yaml references {spec.get('url')!r}"
+            )
+    else:
+        metadata = _build_metadata(spec)
+        json_path.write_text(_json.dumps(metadata.to_json(), indent=2) + "\n")
 
     # Validate what we just wrote, so an emitted record is correct by
     # construction (mlcroissant does the checking).
     problems = validate_record(json_path)
     if problems:
-        raise ValueError(
-            f"emit: produced an invalid record for {name!r}:\n  " + "\n  ".join(problems)
-        )
+        raise ValueError(f"emit: invalid record for {name!r}:\n  " + "\n  ".join(problems))
     return json_path
 
 
@@ -229,19 +278,35 @@ def _tracked_datasets(data_dir: Path) -> list[str]:
 
 
 def validate(data_dir: str | Path = DATA_DIR, sources_dir: str | Path = SOURCES_DIR) -> list[str]:
-    """Full check: every `data_sources/*.json` is valid Croissant, and every
-    DVC-tracked dataset under data/ has a matching record. Returns problems."""
+    """Full check: every `data_sources/*.yaml` states a valid source type, every
+    `*.json` is valid Croissant with a YAML beside it, and every DVC-tracked
+    dataset under data/ has a matching record. Returns problems."""
     data_dir = Path(data_dir)
     sources_dir = Path(sources_dir)
     problems: list[str] = []
 
-    # 1. schema check every record
-    records = sorted(sources_dir.glob("*.json")) if sources_dir.exists() else []
+    def _records(suffix: str) -> list[Path]:
+        if not sources_dir.exists():
+            return []
+        return sorted(p for p in sources_dir.glob(f"*{suffix}") if not p.name.startswith("_"))
+
+    # 1. source type of every YAML
+    specs = {p.stem for p in _records(".yaml")}
+    for name in sorted(specs):
+        problems.extend(check_spec(load_spec(name, sources_dir), f"{name}.yaml"))
+
+    # 2. schema check every Croissant record
+    records = _records(".json")
     documented = {p.stem for p in records}
     for rec in records:
         problems.extend(validate_record(rec))
+        if rec.stem not in specs:
+            problems.append(
+                f"{rec.name}: add {rec.stem}.yaml stating its type (a downloaded "
+                f"Croissant record is 'type: reference', 'format: croissant')"
+            )
 
-    # 2. coverage: tracked dataset without a record
+    # 3. coverage: tracked dataset without a record
     for name in _tracked_datasets(data_dir):
         if name not in documented:
             problems.append(

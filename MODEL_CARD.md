@@ -45,11 +45,11 @@ facts will look done.
 ## Training data
 
 {% if datasets %}
-This release references the following data source(s); their full Croissant
-records travel in the bundle under `provenance/data_sources/`:
+This release uses the following data source(s); their records travel in the
+bundle under `provenance/data_sources/`:
 {% for d in datasets %}
-- **{{ d }}** (see `provenance/data_sources/`)
-{%- endfor %}
+- **{{ d.name }}** — {% if d.disposition == "embed" %}included under `datasets/{{ d.name }}/`{% if d.identifier %}; published at <{{ d.identifier }}>{% endif %}{% elif d.identifier %}not included; obtain it from <{{ d.identifier }}>{% else %}not included; see its record for how it was produced{% endif %}{% if d.citation_doi %}. Cite <https://doi.org/{{ d.citation_doi }}>{% endif %}.
+{% endfor %}
 {% else %}
 <!-- REQUIRED: describe the training data and link its record. -->
 {% endif %}

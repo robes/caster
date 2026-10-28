@@ -150,7 +150,6 @@ remote address (infrastructure) does not.
   bagit.txt                        BagIt declaration
   bag-info.txt                     transfer metadata + Source-Commit
   manifest-sha256.txt              checksums of every payload file (bagit lib)
-  fetch.txt                        present if any dataset uses fetch disposition
   data/                            BagIt payload  ==  RO-Crate root
     ro-crate-metadata.json         the description layer (rocrate lib)
     MODEL_CARD.md                  the human-facing model card (facts auto-filled)
@@ -158,7 +157,7 @@ remote address (infrastructure) does not.
     provenance/
       config/                      Hydra composed config + overrides
       run/                         _provenance.json + _split_properties.json
-      data_sources/                Croissant records for each dataset
+      data_sources/                records of the datasets the release lists
       eval/                        metrics + predictions
     data_manifest.sha256           portable hashes of referenced data (no remote)
     splits/                        split CSVs (bytes by default)
@@ -169,7 +168,8 @@ remote address (infrastructure) does not.
 The contents are read from what the run already produced — the `_provenance.json`
 and `_split_properties.json` stamps, the Hydra composed configs, the Croissant
 records, the eval artifact, the splits, and the commit-pinned source. `rocrate`
-registers each as an entity (datasets link to their Croissant records); `bagit`
+registers each as an entity, and each published dataset as an entity keyed by
+its DOI or URL, linked from the root as `isBasedOn`; `bagit`
 writes the checksum manifests; `bdbag --validate full .` confirms intactness.
 
 ### The model card
@@ -211,18 +211,24 @@ states the task-equivalence notion in each split's `equivalence_notes`.
 
 ### Dataset disposition
 
-The role-based defaults above are the starting point; disposition overrides them
-per dataset:
+Each listed dataset's disposition is checked against the `type` in its
+[`data_sources/` record](DATA_SOURCES.md#two-source-types); the record and the
+`data_manifest.sha256` entry always travel:
 
-- **omit** — descriptor only (the default for raw data). The Croissant record
-  and the `data_manifest.sha256` entry travel; the bytes do not. The reader
-  re-obtains the data via the record's `fetch:` instructions, then verifies
-  against the manifest.
-- **fetch** — the bytes are referenced for automated retrieval via the bag's
-  `fetch.txt` / RO-Crate `contentUrl`, materialized later with
-  `bdbag --resolve-fetch`.
+- **reference** — the bundle names the dataset by its record's `url` (an
+  RO-Crate entity and a line in the model card); the bytes do not travel. The
+  reader obtains them there.
 - **embed** — the bytes are pulled at the release commit (`dvc get … --rev
   <commit>`) into `datasets/<name>/`, for a fully self-sufficient deposit.
+- **omit** — neither bytes nor a pointer; the record says how the data was made.
+
+| Source type | reference | embed | omit |
+|---|---|---|---|
+| `reference` | expected (default) | if you may redistribute it | warning |
+| `local` | error | small or open data | default (large or controlled access) |
+
+A dataset without a record, or a disposition its type does not allow, stops the
+packager, and `--dry-run` reports it the same way.
 
 ### The reader's path
 
@@ -244,8 +250,8 @@ Dataverse) — where an outside reader with only the deposit can both *use* and
 | You want to… | Use |
 |---|---|
 | tag a model version and pull it later | GTO + `dvc get` |
-| hand a colleague the model + how-to-verify | RO-Crate, omit raw data |
-| deposit for a paper, with a DOI | RO-Crate + BagIt, embed/fetch redistributable data |
+| hand a colleague the model + how-to-verify | RO-Crate, reference published data |
+| deposit for a paper, with a DOI | RO-Crate + BagIt, reference or embed redistributable data |
 | nothing yet — still iterating | neither; the run-stamp already makes runs reproducible |
 
 Packaging is opt-in and release-time only. The day-to-day reproducibility loop

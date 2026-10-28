@@ -32,15 +32,14 @@ it a Hydra app so the run is still stamped; put acquisition parameters
 (URLs, credentials references, sizes) in `configs/fetch/<name>.yaml`.
 
 **2. Write a Croissant record** for each external dataset, under
-`data_sources/<name>`. Pick the situation that matches:
-   - *Already publishes Croissant* (Hugging Face, Kaggle, OpenML): download the
-     record to `data_sources/<name>.json`.
-   - *Has a DOI but no Croissant* (Zenodo, Dataverse, OSF): write a short
-     `data_sources/<name>.yaml` and convert it —
-     `caster data emit <name>`.
-   - *Private / assembled by you*: author the metadata locally (the MLCommons
-     Croissant editor can derive a starting point), and document in its
-     `provenance:` field how the data was built.
+`data_sources/<name>`, starting with a `<name>.yaml` that states its `type`:
+   - *Published elsewhere* (`type: reference`, with its DOI/URL as `url`): if it
+     already publishes Croissant (Hugging Face, Kaggle, OpenML), download that
+     record to `data_sources/<name>.json`; otherwise (Zenodo, Dataverse, OSF, a
+     BDBag) describe it in the YAML. Then `caster data emit <name>`.
+   - *Produced by you* (`type: local`: collected, private or generated): author
+     the metadata (the MLCommons Croissant editor can derive a starting point),
+     document in its `provenance:` field how the data was built, and emit.
 
 **3. Pin the raw bytes** so "the data" is reproducible:
 
