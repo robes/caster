@@ -165,8 +165,8 @@ def _extract_data_manifest(repo_root: Path) -> str:
 def _gather_card_facts(cfg: dict, run_dir: Path, commit: str | None, datasets: list[dict]) -> dict:
     """Collect the auto-fillable *facts* for the model card from provenance the
     packager already has: the release config, the run-stamp (metrics, commit),
-    the held-out eval, and the resolved datasets. Human-judgment fields are NOT
-    gathered here — the template marks those as required TODOs."""
+    the held-out eval, and the resolved datasets. Human-judgment sections are NOT
+    gathered here — they come from the project's MODEL_CARD.md prose."""
     from datetime import datetime, timezone
 
     # metrics: prefer the held-out eval result, else the train run's stamp stats.

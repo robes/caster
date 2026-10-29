@@ -358,9 +358,9 @@ def test_card_cli_prints_the_card(git_project, run_dir, capsys):
 
 
 def test_shipped_model_card_assembles(git_project, run_dir):
-    """The MODEL_CARD.md shipped in the project root assembles with the frame:
-    every required section present (empty until authored), datasets listed one
-    per line."""
+    """The project's MODEL_CARD.md assembles with the frame: every required
+    section present, datasets listed one per line. The template ships the
+    sections empty; a project that has written them gets no warnings at all."""
     from pathlib import Path as _P
 
     shipped = _P(PKG.__file__).resolve().parents[2] / "MODEL_CARD.md"
@@ -377,7 +377,7 @@ def test_shipped_model_card_assembles(git_project, run_dir):
     facts = PKG._gather_card_facts(_release_cfg(git_project, run_dir), run_dir, "abc1234", datasets)
     card, warnings = PKG._assemble_card(facts, shipped.read_text(), "MODEL_CARD.md")
     assert card.startswith("# Model Card:")
-    assert all("is still empty" in w for w in warnings) and len(warnings) == 5
+    assert all("is still empty" in w for w in warnings), warnings
     assert "<!--" not in card
     assert "obtain it from <https://doi.org/10.1/x>. Cite <https://doi.org/10.1/y>." in card
     assert "included under `datasets/pubcopy/`; published at" in card
