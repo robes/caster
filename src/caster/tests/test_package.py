@@ -110,8 +110,27 @@ def test_bad_disposition_rejected(git_project, run_dir):
         PKG.package(cfg, repo_root=git_project)
 
 
+def test_each_release_keeps_its_own_stamp(git_project, run_dir):
+    """Two releases in one output_dir: each bundle sits in its own directory with
+    its packaging stamp, so the second build does not overwrite the first's."""
+    _stamp_run(run_dir)
+    cfg = _release_cfg(git_project, run_dir)
+    first = PKG.package(cfg, repo_root=git_project)
+    second = PKG.package({**cfg, "model_id": "other"}, repo_root=git_project)
+
+    out = git_project / "releases"
+    assert (first["asset"], second["asset"]) == (
+        "v1.0_main/v1.0_main.zip",
+        "v1.0_other/v1.0_other.zip",
+    )
+    assert not (out / P.STAMP_FILENAME).exists()
+    for stats in (first, second):
+        stamp = json.loads((out / stats["asset"]).with_name(P.STAMP_FILENAME).read_text())
+        assert stamp["stats"]["asset"] == stats["asset"]
+
+
 def _unzip(git_project, tmp_path) -> Path:
-    bundle = next((git_project / "releases").glob("*.zip"))
+    bundle = next((git_project / "releases").glob("*/*.zip"))
     zipfile.ZipFile(bundle).extractall(tmp_path / "x")
     return next((tmp_path / "x").iterdir()) / "data"
 

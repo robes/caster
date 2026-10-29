@@ -479,23 +479,29 @@ provenance chain (the run's `.hydra/` config, its `_provenance.json`, the DVC
 pointer files, the `data_sources/` records, the eval artifact), and a
 `git archive` of the source pinned to the commit in the run's stamp.
 
+Each release gets its own directory, `releases/<release_tag>_<model_id>/`, with
+the bundle and the packaging step's own `_provenance.json` beside it, so building
+one release never overwrites another's record.
+
 ```
-<release_tag>_<model_id>.zip
-└── <release_tag>_<model_id>/            # BagIt bag root
-    ├── bagit.txt, bag-info.txt          # BagIt declaration + metadata (Source-Commit recorded)
-    ├── manifest-sha256.txt              # checksums of every payload file
-    └── data/                            # BagIt payload == RO-Crate root
-        ├── ro-crate-metadata.json       # the description layer
-        ├── model/                       # checkpoint bytes + .sha256 sidecar
-        ├── provenance/
-        │   ├── config/                  # the run's .hydra config + overrides
-        │   ├── run/                     # _provenance.json + _split_properties.json
-        │   ├── data_sources/            # Croissant records for each dataset
-        │   └── eval/                    # metrics + predictions
-        ├── data_manifest.sha256         # portable hashes of referenced data (no DVC remote dep)
-        ├── splits/                      # split CSVs (bytes by default)
-        ├── source/<project>-<tag>.tar.gz   # git archive at the run commit
-        └── datasets/<name>/             # only for datasets with disposition: embed
+releases/<release_tag>_<model_id>/
+├── _provenance.json                     # the packaging step's stamp
+└── <release_tag>_<model_id>.zip
+    └── <release_tag>_<model_id>/        # BagIt bag root
+        ├── bagit.txt, bag-info.txt      # BagIt declaration + metadata (Source-Commit recorded)
+        ├── manifest-sha256.txt          # checksums of every payload file
+        └── data/                        # BagIt payload == RO-Crate root
+            ├── ro-crate-metadata.json   # the description layer
+            ├── model/                   # checkpoint bytes + .sha256 sidecar
+            ├── provenance/
+            │   ├── config/              # the run's .hydra config + overrides
+            │   ├── run/                 # _provenance.json + _split_properties.json
+            │   ├── data_sources/        # Croissant records for each dataset
+            │   └── eval/                # metrics + predictions
+            ├── data_manifest.sha256     # portable hashes of referenced data (no DVC remote dep)
+            ├── splits/                  # split CSVs (bytes by default)
+            ├── source/<project>-<tag>.tar.gz   # git archive at the run commit
+            └── datasets/<name>/         # only for datasets with disposition: embed
 ```
 
 **What travels is determined by regenerability**, because the bundle is for a
