@@ -45,59 +45,54 @@ Does not need one:
 A pre-commit / CI check enforces the rule: every DVC-tracked dataset directory
 must have a matching `data_sources/` record.
 
-## Three situations
+## Two source types
 
-Real projects span all three. Each needs a different amount of effort — and only
-one needs any Caster code at all.
+Every dataset has a `data_sources/<name>.yaml` whose `type` says where the data
+lives. A release checks its per-dataset disposition against that type (see
+[PACKAGING](PACKAGING.md#dataset-disposition)).
 
-### Situation 1 — the dataset already has Croissant (just download it)
+### `reference` — published elsewhere
 
-Hugging Face, Kaggle, and OpenML emit Croissant for their datasets, as a plain
-JSON-LD document at a stable URL. The handle is the **repository dataset ID**,
-not a DOI — these platforms key on their own IDs, and most do not mint DOIs.
-(DOIs show up on archival repositories; see Situation 2.)
+The dataset lives where a reader can reach it by a DOI or URL: Hugging Face,
+Kaggle, OpenML, Zenodo, Dataverse, FaceBase, an institutional repository. `url`
+is that DOI or URL, which by definition is enough to find and obtain the data;
+`format` says what the reader gets there: `croissant`, `bdbag`, `rocrate`, or
+`other`.
 
-There is nothing to import: you download the file and drop it in `data_sources/`.
+**If it already publishes Croissant** (Hugging Face, Kaggle, OpenML emit it as a
+plain JSON-LD document; their handle is the repository dataset ID, usually not a
+DOI), the YAML is thin and the record is the upstream file, downloaded:
+
+```yaml
+name: <name>
+type: reference
+format: croissant
+url: https://huggingface.co/datasets/<owner>/<name>
+```
 
 ```bash
 # Hugging Face
 curl -L https://huggingface.co/api/datasets/<owner>/<name>/croissant \
   -o data_sources/<name>.json
-
-# Kaggle  (or use the "Croissant" button on the dataset page)
+# Kaggle (or the "Croissant" button on the dataset page)
 curl -L https://www.kaggle.com/datasets/<owner>/<name>/croissant/download \
   -o data_sources/<name>.json
-
-# OpenML  — use the Croissant download on the dataset page
+# OpenML: the Croissant download on the dataset page
+caster data emit <name>     # validates the download; never overwrites it
 ```
 
-The downloaded record carries the dataset's own declared provenance and license;
-no hand-authoring is needed. Caster does not wrap this in a command — fetching a
-public file at a known URL is a one-liner, and a wrapper around it would be
-ceremony with nothing to maintain.
+The committed copy pins the description you used: HF/Kaggle regenerate Croissant
+from the live dataset, so also record the dataset revision (the DVC revision of
+the bytes, or the HF commit). You still `dvc add` (or document-as-untracked)
+the bytes separately: Croissant describes, DVC pins.
 
-Two things are worth doing after the download, and neither is import-specific:
-
-- **Validate it** — the same `data_sources/` validator that runs in pre-commit
-  checks any record, however it arrived (see [Validation](#validation)).
-- **Pin which version you documented** — HF/Kaggle regenerate Croissant from the
-  live dataset, so record the dataset revision alongside the file (the DVC
-  revision of the bytes, or the HF commit), so "which version of the dataset is
-  this describing?" stays answerable.
-
-You still `dvc add` (or document-as-untracked) the actual bytes separately —
-Croissant describes, DVC pins.
-
-### Situation 2 — a DOI / archival source, but no Croissant (author it)
-
-The dataset lives on Zenodo, Dataverse, OSF, or an institutional repository,
-has a DOI, but no ready Croissant record. Here there *is* a real
-transformation, so Caster provides a helper: you write a short YAML, and Caster
-emits valid Croissant JSON-LD from it. The YAML is a thin, human-friendly
-surface over the standard — you fill in what you know, Caster expands it:
+**Otherwise** (a DOI on Zenodo, Dataverse, OSF or FaceBase; a BDBag; an
+RO-Crate) you write the YAML and Caster emits the Croissant from it:
 
 ```yaml
 name: brain_mri
+type: reference
+format: bdbag
 description: >
   T1-weighted brain MRI volumes with per-subject segmentation labels.
 url: https://doi.org/10.5281/zenodo.0000000
@@ -106,15 +101,12 @@ citation:
   doi: 10.5281/zenodo.0000000
   bibtex: |
     @dataset{doe2024brainmri, ... }
-distribution:
+distribution:                       # optional for a reference: files with digests
   - name: brain_mri_bag.zip
-    url: https://zenodo.org/.../brain_mri_bag.zip   # required: Croissant needs a contentUrl
-    sha256: <archive digest>          # integrity check before extraction
-    # (a top-level `url:` is used as the default if a per-entry url is omitted;
-    #  for data with no public URL, use `distribution: local` instead of a list)
+    url: https://zenodo.org/.../brain_mri_bag.zip
+    sha256: <archive digest>
 fetch: |
-  Distributed as a BagIt bag. Download the bag zip from the URL above,
-  then materialize:
+  Download the bag from the DOI above, then materialize:
     bdbag --resolve-fetch all <bag_dir>
     bdbag --validate fast    <bag_dir>
   Move resolved contents into data/raw/brain_mri/.
@@ -124,70 +116,60 @@ fetch: |
 caster data emit brain_mri      # -> data_sources/brain_mri.json (Croissant)
 ```
 
-`emit` is a thin surface over the `mlcroissant` library's builder API
-(`mlc.nodes.Metadata(...).to_json()`). It exists so you can document a dataset
-by filling in a handful of familiar YAML keys instead of learning the library's
-node classes — it maps those keys onto `mlcroissant` and lets the library
-generate and validate the JSON-LD. It covers the common case: the flat
-descriptive metadata (name, description, license, citation, distribution,
-provenance prose) that a research dataset actually needs. It deliberately does
-*not* try to author rich `RecordSet`/`Field` structure (per-column types, nested
-relations) — if you need that level of detail, the MLCommons **Croissant
-editor** is the right tool, and `emit`'s output is a valid starting point you can
-load into it.
+`emit` is a thin surface over the `mlcroissant` library's builder API: it maps a
+handful of familiar YAML keys onto `mlcroissant` and lets the library generate
+and validate the JSON-LD. It covers the flat descriptive metadata a research
+dataset needs (name, description, license, citation, distribution, provenance
+prose) and deliberately does *not* author rich `RecordSet`/`Field` structure;
+for that, load `emit`'s output into the MLCommons **Croissant editor**.
 
 The `fetch:` prose is deliberately free-form. Real-world acquisition is too
-varied to wrap in a generic fetcher — some sources need `wget`, some a BagIt
-client, some authenticated S3, some manual approval. Documenting the procedure
-honestly beats a fetcher that handles every case except yours.
+varied to wrap in a generic fetcher (`wget`, a BagIt client, authenticated S3,
+manual approval), and Caster fetches nothing from `url`. Documenting the
+procedure honestly beats a fetcher that handles every case except yours.
 
-### Situation 3 — data that exists nowhere public (assemble it)
+### `local` — produced by the project
 
-The common research case: data you gathered in the lab, generated from a
-simulation, or received privately, that has no canonical web location at all.
-There is nothing to download and no DOI to point at. You author the metadata
-locally — either by hand in the same lightweight YAML as Situation 2, or with
-the MLCommons **Croissant editor**.
+Data the lab collected, curated, acquired privately or generated: images of
+biosamples, an EHR extract from the medical school, a simulation's output, the
+template's synthetic example. There is nothing public to point at. You author
+the YAML by hand (or start from the MLCommons **Croissant editor**, which can
+derive a RecordSet from your files) and run it through `caster data emit`.
 
 ```yaml
 name: clinic_cohort_2026
+type: local
 description: >
   De-identified cohort assembled in-house from three clinical sources
   (see notes). Not publicly redistributable.
 license: proprietary
-citation: ~                              # no prior publication; omit
 provenance: |
   Assembled 2026-02 from:
     - Source A export (IRB #1234), columns X,Y,Z
     - Source B registry pull, joined on subject hash
     - Manual adjudication of 142 ambiguous records
   Reassembly requires institutional access; contact <PI email>.
-distribution: local                      # bytes live only in data/ + DVC remote
+distribution: local                      # no public files; bytes in data/ + DVC
 ```
-
-The MLCommons **Croissant editor** (an existing, hosted tool — Caster does not
-ship its own) can load your assembled files and derive a starting RecordSet
-(column types, structure), which you then refine, so even home-grown data gets
-standards-shaped metadata without writing JSON-LD by hand. Run the result
-through `caster data emit` (if you authored YAML) or straight through
-the validator (if you authored JSON-LD).
 
 Here Croissant documents *what the data is and how it was built*; DVC (with a
 private or local remote) versions the bytes; the `provenance:` prose carries the
-reassembly recipe that no hash can capture. For data that genuinely cannot be
-shared, this is the honest ceiling of reproducibility: a reader can verify
-*your* run against the pinned bytes, and understand how the data was made, even
-if they cannot independently re-obtain it.
+reassembly or regeneration recipe that no hash can capture. For data that
+genuinely cannot be shared, this is the honest ceiling of reproducibility: a
+reader can verify *your* run against the pinned bytes, and understand how the
+data was made, even if they cannot independently re-obtain it. A release can
+still carry the bytes when they are small and open (`embed`).
 
 ## Validation
 
 One piece of Caster code touches every `data_sources/` record regardless of how
-it got there: a validator, wired into pre-commit and CI. It does two things:
+it got there: a validator, wired into pre-commit and CI. It does three things:
 
+- **Type check** — every YAML states `type`, and a `reference` has a `url` and
+  a `format`.
 - **Schema check** — every record is well-formed Croissant, validated by the
   `mlcroissant` library (Caster does not write its own validator — it calls
-  `mlcroissant`), whether the record was downloaded (Situation 1), emitted
-  (Situation 2), or authored (Situation 3).
+  `mlcroissant`), whether it was downloaded or emitted.
 - **Coverage check** — every DVC-tracked dataset directory under `data/` has a
   matching record in `data_sources/`, so a tracked dataset can never be
   undocumented.

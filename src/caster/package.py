@@ -3,8 +3,8 @@
 The `rocrate` and `bagit` libraries do the bundle mechanics. This module is the
 connective code they cannot supply: pinning the source distribution to the
 commit recorded in the run's stamp, knowing which directories form this
-project's provenance chain, and mapping dataset disposition onto the libraries'
-options.
+project's provenance chain, and mapping each dataset's disposition, checked
+against its `data_sources/` record, onto the libraries' options.
 
 Layout produced (a BagIt bag whose payload is an RO-Crate):
 
@@ -19,10 +19,13 @@ Layout produced (a BagIt bag whose payload is an RO-Crate):
         datasets/<name>/             only datasets explicitly embedded
         source/<project>-<tag>.tar.gz   git archive at the run commit
 
-Disposition (per dataset, from the release config):
-    omit   -> Croissant record + hash in data_manifest travel; bytes do not (default)
-    fetch  -> referenced via RO-Crate contentUrl / BagIt fetch.txt
-    embed  -> bytes pulled at the run commit (dvc get --rev) into the payload
+Disposition (per dataset, from the release config; the default follows the
+record's source type):
+    reference -> an RO-Crate entity whose @id is the record's url (DOI); no bytes.
+                 Default for a `reference` source; an error for a `local` one.
+    embed     -> bytes pulled at the run commit (dvc get --rev) into the payload.
+    omit      -> no bytes and no pointer; the record and the data_manifest hash
+                 travel. Default for a `local` source; a warning for a reference.
 
 CLI:
     python -m caster.package <release_config.yaml>
@@ -33,6 +36,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -45,7 +49,24 @@ from caster._cli import emit_json, info
 from caster.provenance import STAMP_FILENAME, write_stamp
 
 _CHUNK = 1 << 20
-_VALID_DISPOSITIONS = ("omit", "fetch", "embed")
+_VALID_DISPOSITIONS = ("reference", "embed", "omit")
+_DEFAULT_DISPOSITION = {"reference": "reference", "local": "omit"}
+_CARD_REQUIRED = (
+    "Model details",
+    "Intended use",
+    "Training data",
+    "Evaluation",
+    "Limitations, risks, and ethical considerations",
+)
+_DOI = re.compile(r"10\.\d{4,9}/[^\s,}\"']+")
+
+
+class DatasetError(ValueError):
+    """The release's datasets don't line up with their data-source records."""
+
+    def __init__(self, problems: list[str]):
+        super().__init__("; ".join(problems))
+        self.problems = problems
 
 
 # ---------------------------------------------------------------------------
@@ -141,10 +162,10 @@ def _extract_data_manifest(repo_root: Path) -> str:
     return ("\n".join(out_lines) + "\n") if out_lines else ""
 
 
-def _gather_card_facts(cfg: dict, run_dir: Path, commit: str | None) -> dict:
+def _gather_card_facts(cfg: dict, run_dir: Path, commit: str | None, datasets: list[dict]) -> dict:
     """Collect the auto-fillable *facts* for the model card from provenance the
     packager already has: the release config, the run-stamp (metrics, commit),
-    the held-out eval, and the dataset names. Human-judgment fields are NOT
+    the held-out eval, and the resolved datasets. Human-judgment fields are NOT
     gathered here — the template marks those as required TODOs."""
     from datetime import datetime, timezone
 
@@ -177,8 +198,6 @@ def _gather_card_facts(cfg: dict, run_dir: Path, commit: str | None) -> dict:
             except (OSError, json.JSONDecodeError):
                 metrics = {}
 
-    datasets = [d.get("name") for d in cfg.get("datasets", []) if d.get("name")]
-
     return {
         "project_name": cfg.get("project_name", "model"),
         "version": cfg.get("tag", ""),
@@ -195,24 +214,88 @@ def _gather_card_facts(cfg: dict, run_dir: Path, commit: str | None) -> dict:
     }
 
 
-def _render_model_card(facts: dict, repo_root: Path) -> str | None:
-    """Render the project's own `MODEL_CARD.md` (the single source of truth, in
-    the repo root) with the gathered facts. The user authors the judgment
-    sections in that file; Jinja fills the factual fields and carries the authored
-    prose through. Returns None if the project has no card (then packaging simply
-    omits it)."""
+def _model_card_path(repo_root: Path, model_id: str) -> Path | None:
+    """The project's card for this model: `MODEL_CARD.<model_id>.md`, else the
+    single `MODEL_CARD.md`."""
+    for name in (f"MODEL_CARD.{model_id}.md", "MODEL_CARD.md"):
+        if (repo_root / name).is_file():
+            return repo_root / name
+    return None
+
+
+def _card_sections(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Split Markdown into (text before the first `## ` heading, [(heading,
+    body)]). Headings inside fenced code blocks don't count."""
+    preamble: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
+    fenced = False
+    for line in text.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        if not fenced and line.startswith("## "):
+            sections.append((line[3:].strip(), []))
+        else:
+            (sections[-1][1] if sections else preamble).append(line)
+    return "\n".join(preamble).strip(), [(h, "\n".join(b).strip()) for h, b in sections]
+
+
+def _heading_key(heading: str) -> str:
+    return " ".join(heading.lower().split())
+
+
+def _assemble_card(facts: dict, prose: str, label: str) -> tuple[str, list[str]]:
+    """Build the packaged card: Caster's frame (model_card.md.j2) supplies the
+    title, the section order and each section's facts; the project's plain
+    Markdown card supplies what follows them under the same `##` heading.
+
+    A project section the frame doesn't have stays after the section it follows
+    in the project's card. HTML comments (the prompts) are dropped, and the
+    project's own `# ` title gives way to the frame's. Returns (card, warnings):
+    a frame section the project left missing or empty is incomplete."""
     from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-    card_path = repo_root / "MODEL_CARD.md"
-    if not card_path.exists():
-        return None
     env = Environment(
-        loader=FileSystemLoader(str(repo_root)),
+        loader=FileSystemLoader(str(Path(__file__).parent)),
         autoescape=select_autoescape(enabled_extensions=()),  # Markdown, not HTML
         trim_blocks=True,
         lstrip_blocks=True,
     )
-    return env.get_template("MODEL_CARD.md").render(**facts)
+    title, frame = _card_sections(env.get_template("model_card.md.j2").render(**facts))
+
+    prose = re.sub(r"<!--.*?-->", "", prose, flags=re.S)
+    preamble, own = _card_sections(prose)
+    preamble = "\n".join(ln for ln in preamble.splitlines() if not ln.startswith("# ")).strip()
+    known = {_heading_key(h) for h, _ in frame}
+    bodies: dict[str, list[str]] = {}
+    extras: dict[str | None, list[str]] = {}
+    after = None
+    for heading, body in own:
+        key = _heading_key(heading)
+        if key in known:
+            bodies.setdefault(key, []).append(body)
+            after = key
+        else:
+            extras.setdefault(after, []).append(f"## {heading}\n\n{body}")
+
+    parts = [title, preamble, *extras.get(None, [])]
+    for heading, generated in frame:
+        key = _heading_key(heading)
+        parts += [f"## {heading}", generated, *bodies.get(key, []), *extras.get(key, [])]
+    card = re.sub(r"\n{3,}", "\n\n", "\n\n".join(p for p in parts if p)).strip() + "\n"
+
+    warnings = []
+    for heading in _CARD_REQUIRED:
+        key = _heading_key(heading)
+        if key not in bodies:
+            warnings.append(f"{label}: no '## {heading}' section; the card is incomplete")
+        elif not any(bodies[key]):
+            warnings.append(f"{label}: '## {heading}' is still empty; the card is incomplete")
+    if "{{" in prose or "{%" in prose:
+        warnings.append(
+            f"{label} contains Jinja markers; the card is plain Markdown and they are "
+            f"shown as written (the facts come from caster)"
+        )
+    return card, warnings
 
 
 def _git_archive(ref: str, prefix: str, dest: Path) -> str:
@@ -243,7 +326,13 @@ def _copy_into(src: Path, dest: Path) -> bool:
 
 
 def _stage_payload(
-    cfg: dict, repo_root: Path, run_dir: Path, commit: str | None, payload: Path
+    cfg: dict,
+    repo_root: Path,
+    run_dir: Path,
+    commit: str | None,
+    payload: Path,
+    datasets: list[dict],
+    card: str | None,
 ) -> dict:
     """Lay out the RO-Crate payload directory. Returns a summary dict."""
     summary: dict = {}
@@ -284,25 +373,17 @@ def _stage_payload(
     if manifest:
         (payload / "data_manifest.sha256").write_text(manifest)
         summary["data_manifest_entries"] = manifest.count("\n")
-    # data_sources: the Croissant records (description + fetch instructions)
-    ds_src = repo_root / "data_sources"
-    if ds_src.is_dir():
-        ds_dest = prov / "data_sources"
-        ds_dest.mkdir(parents=True, exist_ok=True)
-        for f in sorted(ds_src.iterdir()):
-            if f.is_file() and f.suffix in (".json", ".yaml") and not f.name.startswith("_"):
-                shutil.copy2(f, ds_dest / f.name)
+    # data_sources: the records of the datasets this release lists
+    for d in datasets:
+        for f in (d["record"], d["record"].with_suffix(".json")):
+            _copy_into(f, prov / "data_sources" / f.name)
     # eval artifact (whole)
     if "eval_dir" in cfg and _copy_into(Path(cfg["eval_dir"]), prov / "eval"):
         summary["eval"] = Path(cfg["eval_dir"]).name
 
-    # Model card: the project's own MODEL_CARD.md (repo root) is the single source
-    # of truth — the user authors the judgment sections; we fill the facts and
-    # carry it into the bundle. Omitted if the project has no card.
-    card = _render_model_card(_gather_card_facts(cfg, run_dir, commit), repo_root)
+    # Model card, assembled in package(); omitted if the project has none.
     if card is not None:
         (payload / "MODEL_CARD.md").write_text(card)
-        summary["model_card"] = True
 
     # source distribution pinned to the run commit
     project = cfg.get("project_name") or repo_root.name
@@ -314,21 +395,89 @@ def _stage_payload(
     return summary
 
 
-def _stage_datasets(
-    cfg: dict, repo_root: Path, commit: str, payload: Path
-) -> tuple[list[str], list[str]]:
-    """Apply per-dataset disposition. Returns (embedded names, fetch.txt lines)."""
-    embedded: list[str] = []
-    fetch_lines: list[str] = []
+def _citation_doi(spec: dict, json_path: Path) -> str | None:
+    """The DOI to cite: the YAML's `citation.doi`, else the first DOI in the
+    Croissant record's `citeAs`."""
+    doi = (spec.get("citation") or {}).get("doi")
+    if doi:
+        return str(doi)
+    try:
+        cite = json.loads(json_path.read_text()).get("citeAs") or ""
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
+    m = _DOI.search(str(cite))
+    return m.group(0) if m else None
+
+
+def _resolve_datasets(cfg: dict, repo_root: Path) -> tuple[list[dict], list[str]]:
+    """Check each listed dataset's disposition against its data-source record.
+
+    Returns (datasets, warnings); raises DatasetError listing every problem.
+    Runs before a dry run returns, so a dry run refuses what a real run would.
+    """
+    from caster.data import check_spec
+
+    sources = repo_root / "data_sources"
+    datasets: list[dict] = []
+    problems: list[str] = []
+    warnings: list[str] = []
     for entry in cfg.get("datasets", []):
-        name = entry["name"]
-        disp = entry.get("disposition", "omit")
+        name = entry.get("name")
+        record = sources / f"{name}.yaml"
+        if not record.exists():
+            problems.append(f"dataset {name!r}: no data_sources/{name}.yaml record")
+            continue
+        spec = yaml.safe_load(record.read_text()) or {}
+        spec_problems = check_spec(spec, f"data_sources/{name}.yaml")
+        if spec_problems:
+            problems += spec_problems
+            continue
+        kind = spec["type"]
+        disp = entry.get("disposition", _DEFAULT_DISPOSITION[kind])
+        if disp == "fetch":
+            problems.append(f"dataset {name!r}: 'fetch' was replaced by 'reference'")
+            continue
         if disp not in _VALID_DISPOSITIONS:
-            raise ValueError(f"dataset {name!r}: bad disposition {disp!r}")
-        if disp == "embed":
+            problems.append(
+                f"dataset {name!r}: bad disposition {disp!r} "
+                f"(use one of {', '.join(_VALID_DISPOSITIONS)})"
+            )
+            continue
+        if kind == "local" and disp == "reference":
+            problems.append(
+                f"dataset {name!r}: a local source has nothing to reference; use embed or omit"
+            )
+            continue
+        if kind == "reference" and disp == "omit":
+            warnings.append(
+                f"dataset {name!r} is published at {spec['url']}; "
+                f"'reference' would name it in the bundle, 'omit' does not."
+            )
+        datasets.append(
+            {
+                "name": name,
+                "type": kind,
+                "disposition": disp,
+                "identifier": spec.get("url") if kind == "reference" else None,
+                "format": spec.get("format"),
+                "citation_doi": _citation_doi(spec, record.with_suffix(".json")),
+                "path": entry.get("path", f"data/{name}"),
+                "record": record,
+            }
+        )
+    if problems:
+        raise DatasetError(problems)
+    return datasets, warnings
+
+
+def _stage_datasets(datasets: list[dict], repo_root: Path, commit: str, payload: Path) -> list[str]:
+    """Pull the bytes of embedded datasets into the payload. Returns their names."""
+    embedded: list[str] = []
+    for d in datasets:
+        if d["disposition"] == "embed":
+            name, path = d["name"], d["path"]
             dest = payload / "datasets" / name
             dest.parent.mkdir(parents=True, exist_ok=True)
-            path = entry.get("path", f"data/{name}")
             cp = _run("dvc", "get", ".", path, "--rev", commit, "-o", str(dest), check=False)
             if cp.returncode != 0:
                 print(
@@ -337,15 +486,7 @@ def _stage_datasets(
                 )
                 _copy_into(repo_root / path, dest)
             embedded.append(name)
-        elif disp == "fetch":
-            ft = entry.get("fetch_txt")
-            if not ft or not Path(ft).exists():
-                raise ValueError(
-                    f"dataset {name!r}: disposition 'fetch' needs a committed 'fetch_txt'"
-                )
-            fetch_lines += [ln for ln in Path(ft).read_text().splitlines() if ln.strip()]
-        # omit: nothing; the Croissant record + DVC pointer already travel
-    return embedded, fetch_lines
+    return embedded
 
 
 # ---------------------------------------------------------------------------
@@ -353,8 +494,15 @@ def _stage_datasets(
 # ---------------------------------------------------------------------------
 
 
-def _write_crate_metadata(ROCrate, payload: Path, cfg: dict, summary: dict) -> None:
-    """Register payload contents as RO-Crate entities and write the metadata."""
+def _write_crate_metadata(ROCrate, payload: Path, cfg: dict, datasets: list[dict]) -> None:
+    """Register payload contents as RO-Crate entities and write the metadata.
+
+    Each dataset with a published identifier (reference, or a reference source
+    that is embedded) becomes a contextual entity keyed by that identifier and
+    linked from the root as `isBasedOn`, so the dependency is machine-readable.
+    """
+    from rocrate.model.contextentity import ContextEntity
+
     crate = ROCrate()
     crate.name = f"{cfg.get('project_name', payload.name)} {cfg.get('tag', '')}".strip()
     crate.description = cfg.get("description", "Caster archival release")
@@ -363,14 +511,31 @@ def _write_crate_metadata(ROCrate, payload: Path, cfg: dict, summary: dict) -> N
         d = payload / sub
         if d.is_dir():
             crate.add_directory(str(d), dest_path=sub)
+    based_on = []
+    for d in datasets:
+        if d["identifier"]:
+            props = {"@type": "Dataset", "name": d["name"]}
+            if d["citation_doi"]:
+                props["citation"] = f"https://doi.org/{d['citation_doi']}"
+            based_on.append(crate.add(ContextEntity(crate, d["identifier"], properties=props)))
+    if based_on:
+        crate.root_dataset["isBasedOn"] = based_on
     # the metadata file lands at payload/ro-crate-metadata.json
     crate.write(str(payload))
 
 
 def package(
-    cfg: dict, repo_root: Path | None = None, *, dry_run: bool = False, as_json: bool = False
+    cfg: dict,
+    repo_root: Path | None = None,
+    *,
+    dry_run: bool = False,
+    as_json: bool = False,
+    card_only: bool = False,
 ) -> dict:
-    """Build the bag. Returns a stats dict for the packaging step's own stamp."""
+    """Build the bag. Returns a stats dict for the packaging step's own stamp.
+
+    `card_only` returns the model card the bundle would carry, and its warnings,
+    instead; like `dry_run` it writes nothing."""
     bagit, ROCrate = _require_libs()
     repo_root = repo_root or Path(_run("git", "rev-parse", "--show-toplevel").stdout.strip())
 
@@ -410,20 +575,38 @@ def package(
             f"eval_dir {eval_dir} does not exist; the bundle will lack "
             f"the held-out evaluation result."
         )
+    datasets, dataset_warnings = _resolve_datasets(cfg, repo_root)
+    warnings += dataset_warnings
     commit = _run_commit(run_dir)
     if commit is None:
         warnings.append(
             "no commit in the run stamp; the source archive will fall "
             "back to HEAD, which may not be the code that produced this run."
         )
+    model_id = cfg.get("model_id", "main")
+    card_path = _model_card_path(repo_root, model_id)
+    facts = _gather_card_facts(cfg, run_dir, commit, datasets)
+    if card_path is None:
+        warnings.append(
+            f"no MODEL_CARD.{model_id}.md or MODEL_CARD.md; the bundle will have no model card."
+        )
+        card, _ = _assemble_card(facts, "", "MODEL_CARD.md")  # facts only, for --card
+    else:
+        card, card_warnings = _assemble_card(facts, card_path.read_text(), card_path.name)
+        warnings += card_warnings
     if not as_json:
         for w in warnings:
             info(f"caster: WARNING — {w}")
     tag = cfg.get("tag", "untagged")
-    model_id = cfg.get("model_id", "main")
     asset_stem = f"{tag}_{model_id}"
     out = Path(cfg.get("output_dir", "releases"))
 
+    if card_only:
+        return {
+            "model_card": card_path.name if card_path else None,
+            "card": card,
+            "warnings": warnings,
+        }
     if dry_run:
         # Report what would be packaged and which warnings would fire; write nothing.
         return {
@@ -432,6 +615,8 @@ def package(
             "output_dir": str(out),
             "run_dir": str(run_dir),
             "would_use_commit": commit,
+            "datasets": {d["name"]: d["disposition"] for d in datasets},
+            "model_card": card_path.name if card_path else None,
             "warnings": warnings,
         }
 
@@ -445,9 +630,11 @@ def package(
         bag_root.mkdir(parents=True)
         payload = bag_root
 
-        summary = _stage_payload(cfg, repo_root, run_dir, commit, payload)
-        embedded, fetch_lines = _stage_datasets(cfg, repo_root, summary["source_ref"], payload)
-        _write_crate_metadata(ROCrate, payload, cfg, summary)
+        summary = _stage_payload(
+            cfg, repo_root, run_dir, commit, payload, datasets, card if card_path else None
+        )
+        embedded = _stage_datasets(datasets, repo_root, summary["source_ref"], payload)
+        _write_crate_metadata(ROCrate, payload, cfg, datasets)
 
         # wrap as a bag: bagit moves the payload into data/ and writes manifests.
         bagit.make_bag(
@@ -460,8 +647,6 @@ def package(
                 "Source-Commit": summary["source_ref"],
             },
         )
-        if fetch_lines:
-            (bag_root / "fetch.txt").write_text("\n".join(fetch_lines) + "\n")
 
         shutil.make_archive(str(out / asset_stem), "zip", tmp, asset_stem)
 
@@ -470,8 +655,9 @@ def package(
         "asset": f"{asset_stem}.zip",
         "source_ref": summary["source_ref"],
         "checkpoint_sha256": summary["checkpoint_sha256"],
+        "model_card": card_path.name if card_path else None,
+        "datasets": {d["name"]: d["disposition"] for d in datasets},
         "embedded_datasets": embedded,
-        "fetch_entries": len(fetch_lines),
         "warnings": warnings,
     }
     # the packaging step is itself provenance-tracked
@@ -487,13 +673,29 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="report what would be packaged (and any warnings); write nothing",
     )
+    parser.add_argument(
+        "--card",
+        action="store_true",
+        help="print the model card the bundle would carry (and any warnings); write nothing",
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable output on stdout")
     args = parser.parse_args(argv)
     cfg = yaml.safe_load(Path(args.config).read_text()) or {}
-    stats = package(cfg, dry_run=args.dry_run, as_json=args.json)
+    try:
+        stats = package(cfg, dry_run=args.dry_run, as_json=args.json, card_only=args.card)
+    except DatasetError as exc:
+        if args.json:
+            emit_json("package", ok=False, problems=exc.problems)
+        else:
+            for p in exc.problems:
+                info(f"FAIL  {p}")
+        return 1
 
     if args.json:
         emit_json("package", ok=True, result=stats, problems=stats.get("warnings", []))
+        return 0
+    if args.card:
+        print(stats["card"], end="")
         return 0
     if args.dry_run:
         info(

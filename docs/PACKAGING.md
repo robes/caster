@@ -150,7 +150,6 @@ remote address (infrastructure) does not.
   bagit.txt                        BagIt declaration
   bag-info.txt                     transfer metadata + Source-Commit
   manifest-sha256.txt              checksums of every payload file (bagit lib)
-  fetch.txt                        present if any dataset uses fetch disposition
   data/                            BagIt payload  ==  RO-Crate root
     ro-crate-metadata.json         the description layer (rocrate lib)
     MODEL_CARD.md                  the human-facing model card (facts auto-filled)
@@ -158,7 +157,7 @@ remote address (infrastructure) does not.
     provenance/
       config/                      Hydra composed config + overrides
       run/                         _provenance.json + _split_properties.json
-      data_sources/                Croissant records for each dataset
+      data_sources/                records of the datasets the release lists
       eval/                        metrics + predictions
     data_manifest.sha256           portable hashes of referenced data (no remote)
     splits/                        split CSVs (bytes by default)
@@ -169,23 +168,30 @@ remote address (infrastructure) does not.
 The contents are read from what the run already produced — the `_provenance.json`
 and `_split_properties.json` stamps, the Hydra composed configs, the Croissant
 records, the eval artifact, the splits, and the commit-pinned source. `rocrate`
-registers each as an entity (datasets link to their Croissant records); `bagit`
+registers each as an entity, and each published dataset as an entity keyed by
+its DOI or URL, linked from the root as `isBasedOn`; `bagit`
 writes the checksum manifests; `bdbag --validate full .` confirms intactness.
 
 ### The model card
 
 The bundle includes a `MODEL_CARD.md` (Mitchell et al., 2019) — the human-facing
-companion to the machine-verifiable provenance. The project's own `MODEL_CARD.md`
-(in the repo root) is the single source of truth: you author the judgment
-sections (intended use, limitations, ethical considerations) directly in it, and
-the packager renders a copy into the bundle, filling the *factual* fields it
-already has — name, version, commit, license, metrics (held-out eval, else the
-run-stamp's stats), and dataset names — via Jinja while carrying your prose
-through unchanged. The factual fields use `{{ ... }}` / `{% ... %}` markers
-(leave them); the judgment sections are marked `REQUIRED` and cannot be
-auto-filled — Caster will not auto-draft plausible-looking prose for them. A card
-whose REQUIRED sections are still blank is incomplete even though the facts look
-done. A project that deletes its `MODEL_CARD.md` simply ships no card.
+companion to the machine-verifiable provenance. It is built from two parts:
+
+- **Your prose:** `MODEL_CARD.md` in the repo root, plain Markdown, or
+  `MODEL_CARD.<model_id>.md` per model when the project releases several
+  (`model_id` from the release config). You write the judgment sections in it
+  as you work (model details, intended use, training data, evaluation,
+  limitations), under the headings it ships with; Caster will not draft them.
+- **Caster's frame** (`src/caster/model_card.md.j2`): the title, the section
+  order, and the facts it already has: name, version, commit, license, datasets
+  and their dispositions, metrics (held-out eval, else the run-stamp's stats).
+
+The packager places each of your sections under the frame's heading of the same
+name, after its facts; a section the frame lacks stays where you put it, and the
+`<!-- -->` prompts are dropped. A missing or still-empty section is reported as
+incomplete. `caster package <config> --card` prints the finished card, with
+those warnings, without building anything. With no card for the model, the
+bundle has none and the packager warns.
 
 ### Verification is tolerant, not bit-exact
 
@@ -211,18 +217,24 @@ states the task-equivalence notion in each split's `equivalence_notes`.
 
 ### Dataset disposition
 
-The role-based defaults above are the starting point; disposition overrides them
-per dataset:
+Each listed dataset's disposition is checked against the `type` in its
+[`data_sources/` record](DATA_SOURCES.md#two-source-types); the record and the
+`data_manifest.sha256` entry always travel:
 
-- **omit** — descriptor only (the default for raw data). The Croissant record
-  and the `data_manifest.sha256` entry travel; the bytes do not. The reader
-  re-obtains the data via the record's `fetch:` instructions, then verifies
-  against the manifest.
-- **fetch** — the bytes are referenced for automated retrieval via the bag's
-  `fetch.txt` / RO-Crate `contentUrl`, materialized later with
-  `bdbag --resolve-fetch`.
+- **reference** — the bundle names the dataset by its record's `url` (an
+  RO-Crate entity and a line in the model card); the bytes do not travel. The
+  reader obtains them there.
 - **embed** — the bytes are pulled at the release commit (`dvc get … --rev
   <commit>`) into `datasets/<name>/`, for a fully self-sufficient deposit.
+- **omit** — neither bytes nor a pointer; the record says how the data was made.
+
+| Source type | reference | embed | omit |
+|---|---|---|---|
+| `reference` | expected (default) | if you may redistribute it | warning |
+| `local` | error | small or open data | default (large or controlled access) |
+
+A dataset without a record, or a disposition its type does not allow, stops the
+packager, and `--dry-run` reports it the same way.
 
 ### The reader's path
 
@@ -244,8 +256,8 @@ Dataverse) — where an outside reader with only the deposit can both *use* and
 | You want to… | Use |
 |---|---|
 | tag a model version and pull it later | GTO + `dvc get` |
-| hand a colleague the model + how-to-verify | RO-Crate, omit raw data |
-| deposit for a paper, with a DOI | RO-Crate + BagIt, embed/fetch redistributable data |
+| hand a colleague the model + how-to-verify | RO-Crate, reference published data |
+| deposit for a paper, with a DOI | RO-Crate + BagIt, reference or embed redistributable data |
 | nothing yet — still iterating | neither; the run-stamp already makes runs reproducible |
 
 Packaging is opt-in and release-time only. The day-to-day reproducibility loop
@@ -256,8 +268,10 @@ needs none of it.
 `caster package <config>` accepts:
 
 - `--dry-run` — report what would be packaged and which warnings would fire
-  (missing stamp/config/eval, HEAD fallback), writing nothing. Check a release
-  config before building.
+  (missing stamp/config/eval, HEAD fallback, dataset or card gaps), writing
+  nothing. Check a release config before building.
+- `--card` — print the model card the bundle would carry; warnings go to stderr.
+  Writes nothing.
 - `--json` — emit the standard `{"ok", "command", "result", "problems"}`
   envelope on stdout (only), with warnings under `problems`, so the asset name,
   source commit, and any provenance gaps can be read programmatically.

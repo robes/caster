@@ -83,10 +83,10 @@ You should see `Stage 'fetch' didn't change, skipping`, then the downstream
 stages run. If you instead see `Running stage 'fetch'`, stop — the bundled data
 is being regenerated, and you are no longer reproducing from what was shipped.
 
-(For a dataset shipped with `fetch` disposition rather than `embed`, follow the
-URLs in `fetch.txt` / the Croissant records to obtain the bytes, place them the
-same way, then `dvc commit fetch` as above. Datasets shipped as `omit` are not
-in the bundle at all — obtain them via their Croissant `data_sources/` record.)
+(For a dataset shipped as `reference` rather than `embed`, obtain the bytes
+from the DOI/URL the model card and `data_sources/` record give, place them the
+same way, then `dvc commit fetch` as above. A dataset shipped as `omit` is not
+in the bundle at all; its record says how it was made.)
 
 ## 5. Check equivalence
 

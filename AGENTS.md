@@ -41,6 +41,8 @@ human text:
 - **`package --dry-run`.** Reports what would be packaged and which warnings would
   fire (missing stamp/config/eval, HEAD fallback) and writes nothing. Use it to
   check a release config before building, then run without `--dry-run`.
+  `package --card` prints the model card the bundle would carry, so its prose can
+  be reviewed (and empty sections found) before a release.
 
 Exit codes are reliable: 0 on success, non-zero on real failure. A non-zero exit
 or `"ok": false` means stop and read the problems.

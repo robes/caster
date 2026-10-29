@@ -41,6 +41,9 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 include = ["caster*", "myproject*"]
 
+[tool.setuptools.package-data]
+caster = ["*.j2"]  # the model-card frame
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
@@ -50,6 +53,11 @@ src = ["src", "scripts"]
 # A reasonable default set: pyflakes, pycodestyle, isort, bugbear, pyupgrade.
 select = ["E", "F", "I", "B", "UP"]
 ignore = ["E501"]  # line length handled by the formatter
+
+[tool.ruff.lint.per-file-ignores]
+# Template code targets the template's Python floor (3.10); a project with a
+# higher floor shouldn't rewrite it, or every template update re-conflicts.
+"src/caster/**" = ["UP"]
 
 [tool.pytest.ini_options]
 testpaths = ["src/caster/tests"]

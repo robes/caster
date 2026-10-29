@@ -12,4 +12,5 @@ organization: <Institution>
 contact_email: <contact@example.org>
 datasets:
   - name: <dataset_name>
-    disposition: omit            # omit | fetch (needs fetch_txt) | embed
+    disposition: reference       # reference | embed | omit; default follows the
+                                 # record's type (reference -> reference, local -> omit)

@@ -11,7 +11,7 @@
 
 **C**ode, **A**rtifact, and **S**tatistic **T**racking for **E**xperimental **R**eproducibility.
 
-Caster is a project *template* for machine-learning model development by 
+Caster is a project *template* for machine-learning model development by
 research teams. The name is the idea: a caster is a small, lightweight wheel
 that makes heavy furniture easy to move. Caster does the same for an ML project.
 It carries the weight of reproducibility — every result traceable to the exact
@@ -223,11 +223,13 @@ with the how-to; for depth on any one duty, its own doc:
   release bundle back to a reproduced, verified result.
 - [`COMMANDS.md`](docs/COMMANDS.md) — the `caster` command reference: every
   command and its arguments, in one table.
+- [`UPDATING.md`](docs/UPDATING.md) — taking later template changes into a
+  project made from Caster.
 
 The three duties:
 
-- [`DATA_SOURCES.md`](docs/DATA_SOURCES.md) — **define your data**: the three
-  data-source situations and the Croissant-aligned `data_sources/` convention.
+- [`DATA_SOURCES.md`](docs/DATA_SOURCES.md) — **define your data**: the two
+  data-source types and the Croissant-aligned `data_sources/` convention.
 - [`PROVENANCE.md`](docs/PROVENANCE.md) — **record your workflow**: how git,
   Hydra, and DVC pin code, config, and data, and how Caster's run-stamp ties each
   run to its commit and environment.

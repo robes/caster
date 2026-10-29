@@ -32,15 +32,14 @@ it a Hydra app so the run is still stamped; put acquisition parameters
 (URLs, credentials references, sizes) in `configs/fetch/<name>.yaml`.
 
 **2. Write a Croissant record** for each external dataset, under
-`data_sources/<name>`. Pick the situation that matches:
-   - *Already publishes Croissant* (Hugging Face, Kaggle, OpenML): download the
-     record to `data_sources/<name>.json`.
-   - *Has a DOI but no Croissant* (Zenodo, Dataverse, OSF): write a short
-     `data_sources/<name>.yaml` and convert it —
-     `caster data emit <name>`.
-   - *Private / assembled by you*: author the metadata locally (the MLCommons
-     Croissant editor can derive a starting point), and document in its
-     `provenance:` field how the data was built.
+`data_sources/<name>`, starting with a `<name>.yaml` that states its `type`:
+   - *Published elsewhere* (`type: reference`, with its DOI/URL as `url`): if it
+     already publishes Croissant (Hugging Face, Kaggle, OpenML), download that
+     record to `data_sources/<name>.json`; otherwise (Zenodo, Dataverse, OSF, a
+     BDBag) describe it in the YAML. Then `caster data emit <name>`.
+   - *Produced by you* (`type: local`: collected, private or generated): author
+     the metadata (the MLCommons Croissant editor can derive a starting point),
+     document in its `provenance:` field how the data was built, and emit.
 
 **3. Pin the raw bytes** so "the data" is reproducible:
 
@@ -138,6 +137,9 @@ placeholders are not real runs:
    - `run_dir` → the train run (supplies the `.hydra` config + `_provenance.json`)
    - `checkpoint_path` → the canonical `models/model.<ext>` from `dvc repro`
    - `eval_dir` → the held-out (`+eval=holdout`) run from step 1
+   - `datasets` → each dataset's `disposition` (`reference`, `embed` or `omit`),
+     checked against its record's `type`; see
+     [PACKAGING](PACKAGING.md#dataset-disposition)
 
 The packager refuses if `run_dir` does not exist and warns loudly if it lacks the
 config or stamp — a bundle without its provenance chain is not a release.
@@ -153,13 +155,12 @@ BagIt bag (verifiable transfer), carrying the checkpoint, the provenance chain, 
 portable data-hash manifest, a source archive pinned to the run's commit, and a
 `MODEL_CARD.md`.
 
-The card's factual fields (name, version, commit, metrics, datasets) are
-auto-filled from the provenance; its judgment sections (intended use,
-limitations, ethics) you author directly in the project's own `MODEL_CARD.md`
-(repo root) — ideally before this step, not after — so the packaged card is
-complete, not a facts-only stub. The packager renders your `MODEL_CARD.md`,
-filling the facts and carrying your prose through. (A project with no
-`MODEL_CARD.md` simply ships no card.)
+The card's facts (name, version, commit, metrics, datasets) come from the
+provenance; its judgment sections (model details, intended use, training data,
+evaluation, limitations) you write in plain Markdown in `MODEL_CARD.md`, or
+`MODEL_CARD.<model_id>.md` per model — as you work, not after this step — so the
+packaged card is complete, not a facts-only stub. `caster package <config>
+--card` shows the finished card and any empty section at any time.
 
 **5. Deposit it.** The bag is suitable for a DOI-issuing archive (Zenodo, OSF,
 Dataverse). An outside reader with only the deposit can obtain the data via the
