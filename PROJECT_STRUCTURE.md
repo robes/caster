@@ -43,8 +43,7 @@ project/
 ├── CONTRIBUTING.md              # how to set up, run, and contribute
 ├── AGENTS.md                    # orientation for coding agents: commands, affordances, invariants
 ├── CLAUDE.md                    # one-line pointer to AGENTS.md
-├── MODEL_CARD.template.md       # model-card template; copy to MODEL_CARD[.<model_id>].md and author it
-│                                #   (caster.package fills facts + carries your prose at release)
+├── MODEL_CARD.md                # your model card's prose (plain Markdown); caster.package adds the facts
 ├── Makefile                     # thin convenience targets: setup/test/lint/pipeline/package/check
 ├── docs/                        # reference documentation
 │   ├── HOWTO.md                 # end-to-end: data → experiments → release, for your project
@@ -81,6 +80,7 @@ project/
 │   │   ├── provenance.py        # run-stamp: Hydra callback + `caster provenance stamp`
 │   │   ├── data.py              # `caster data` — validate / emit Croissant records
 │   │   ├── package.py           # `caster package` — archival release (RO-Crate + BagIt)
+│   │   ├── model_card.md.j2     # the model card's frame: section order + facts
 │   │   ├── splits.py            # split helpers used by the example pipeline
 │   │   └── _cli.py              # shared CLI helpers (JSON envelope, stderr routing)
 │   └── <project>/               # YOUR code — framework-agnostic; Caster never imports your model

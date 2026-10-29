@@ -1,0 +1,55 @@
+# Model Card: {{ project_name }} {{ version }}
+
+## Model details
+
+- **Name:** {{ project_name }}
+- **Version:** {{ version }}
+- **Release identifier:** {{ model_id }}
+{% if organization %}
+- **Organization:** {{ organization }}
+{% endif %}
+{% if contact_email %}
+- **Contact:** {{ contact_email }}
+{% endif %}
+{% if license %}
+- **License:** {{ license }}
+{% endif %}
+- **Source commit:** {{ commit or "(none recorded — see provenance/run)" }}
+- **Date packaged:** {{ date_packaged }}
+{% if description %}
+- **Description:** {{ description }}
+{% endif %}
+
+## Intended use
+
+## Training data
+
+{% if datasets %}
+This release uses the following data source(s); their records travel in the
+bundle under `provenance/data_sources/`:
+
+{% for d in datasets %}
+- **{{ d.name }}** — {% if d.disposition == "embed" %}included under `datasets/{{ d.name }}/`{% if d.identifier %}; published at <{{ d.identifier }}>{% endif %}{% elif d.identifier %}not included; obtain it from <{{ d.identifier }}>{% else %}not included; see its record for how it was produced{% endif %}{% if d.citation_doi %}. Cite <https://doi.org/{{ d.citation_doi }}>{% endif %}.
+{% endfor %}
+{% endif %}
+
+## Evaluation
+
+{% if metrics %}
+Reported metrics (from the recorded run{% if eval_name %}, held-out: `{{ eval_name }}`{% endif %}):
+
+| metric | value |
+|---|---|
+{% for k, v in metrics.items() %}
+| {{ k }} | {{ v }} |
+{% endfor %}
+{% endif %}
+
+## Limitations, risks, and ethical considerations
+
+## Provenance
+
+The verifiable record — exact commit, environment, data integrity manifest, and
+source archive — travels alongside this card in the release bundle. See
+`provenance/` (the run-stamp, config, eval, and data-source records) and the
+RO-Crate metadata at the bundle root.

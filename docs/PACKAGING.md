@@ -175,20 +175,23 @@ writes the checksum manifests; `bdbag --validate full .` confirms intactness.
 ### The model card
 
 The bundle includes a `MODEL_CARD.md` (Mitchell et al., 2019) — the human-facing
-companion to the machine-verifiable provenance. Caster ships
-`MODEL_CARD.template.md`, which is updated with the template; you copy it to
-`MODEL_CARD.md`, or to `MODEL_CARD.<model_id>.md` per model when the project
-releases several (`model_id` from the release config), and author the judgment
-sections (intended use, limitations, ethical considerations) there. The
-packager takes `MODEL_CARD.<model_id>.md`, else `MODEL_CARD.md`, and renders it
-into the bundle, filling the *factual* fields it already has — name, version,
-commit, license, metrics (held-out eval, else the run-stamp's stats), and
-datasets — via Jinja while carrying your prose through unchanged. The factual fields use `{{ ... }}` / `{% ... %}` markers
-(leave them); the judgment sections are marked `REQUIRED` and cannot be
-auto-filled — Caster will not auto-draft plausible-looking prose for them. A card
-whose REQUIRED sections are still blank is incomplete even though the facts look
-done. With no card for the model, the bundle has none and the packager warns;
-it never ships the template.
+companion to the machine-verifiable provenance. It is built from two parts:
+
+- **Your prose:** `MODEL_CARD.md` in the repo root, plain Markdown, or
+  `MODEL_CARD.<model_id>.md` per model when the project releases several
+  (`model_id` from the release config). You write the judgment sections in it
+  as you work (model details, intended use, training data, evaluation,
+  limitations), under the headings it ships with; Caster will not draft them.
+- **Caster's frame** (`src/caster/model_card.md.j2`): the title, the section
+  order, and the facts it already has: name, version, commit, license, datasets
+  and their dispositions, metrics (held-out eval, else the run-stamp's stats).
+
+The packager places each of your sections under the frame's heading of the same
+name, after its facts; a section the frame lacks stays where you put it, and the
+`<!-- -->` prompts are dropped. A missing or still-empty section is reported as
+incomplete. `caster package <config> --card` prints the finished card, with
+those warnings, without building anything. With no card for the model, the
+bundle has none and the packager warns.
 
 ### Verification is tolerant, not bit-exact
 
@@ -265,8 +268,10 @@ needs none of it.
 `caster package <config>` accepts:
 
 - `--dry-run` — report what would be packaged and which warnings would fire
-  (missing stamp/config/eval, HEAD fallback), writing nothing. Check a release
-  config before building.
+  (missing stamp/config/eval, HEAD fallback, dataset or card gaps), writing
+  nothing. Check a release config before building.
+- `--card` — print the model card the bundle would carry; warnings go to stderr.
+  Writes nothing.
 - `--json` — emit the standard `{"ok", "command", "result", "problems"}`
   envelope on stdout (only), with warnings under `problems`, so the asset name,
   source commit, and any provenance gaps can be read programmatically.

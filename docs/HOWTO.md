@@ -155,13 +155,12 @@ BagIt bag (verifiable transfer), carrying the checkpoint, the provenance chain, 
 portable data-hash manifest, a source archive pinned to the run's commit, and a
 `MODEL_CARD.md`.
 
-The card's factual fields (name, version, commit, metrics, datasets) are
-auto-filled from the provenance; its judgment sections (intended use,
-limitations, ethics) you author in a copy of `MODEL_CARD.template.md`:
-`MODEL_CARD.md`, or `MODEL_CARD.<model_id>.md` per model — ideally before this
-step, not after — so the packaged card is complete, not a facts-only stub. The
-packager renders the model's card, filling the facts and carrying your prose
-through. (With no card, it warns and the bundle has none.)
+The card's facts (name, version, commit, metrics, datasets) come from the
+provenance; its judgment sections (model details, intended use, training data,
+evaluation, limitations) you write in plain Markdown in `MODEL_CARD.md`, or
+`MODEL_CARD.<model_id>.md` per model — as you work, not after this step — so the
+packaged card is complete, not a facts-only stub. `caster package <config>
+--card` shows the finished card and any empty section at any time.
 
 **5. Deposit it.** The bag is suitable for a DOI-issuing archive (Zenodo, OSF,
 Dataverse). An outside reader with only the deposit can obtain the data via the

@@ -51,6 +51,13 @@ from caster.provenance import STAMP_FILENAME, write_stamp
 _CHUNK = 1 << 20
 _VALID_DISPOSITIONS = ("reference", "embed", "omit")
 _DEFAULT_DISPOSITION = {"reference": "reference", "local": "omit"}
+_CARD_REQUIRED = (
+    "Model details",
+    "Intended use",
+    "Training data",
+    "Evaluation",
+    "Limitations, risks, and ethical considerations",
+)
 _DOI = re.compile(r"10\.\d{4,9}/[^\s,}\"']+")
 
 
@@ -209,27 +216,86 @@ def _gather_card_facts(cfg: dict, run_dir: Path, commit: str | None, datasets: l
 
 def _model_card_path(repo_root: Path, model_id: str) -> Path | None:
     """The project's card for this model: `MODEL_CARD.<model_id>.md`, else the
-    single `MODEL_CARD.md`. Never `MODEL_CARD.template.md`, whose REQUIRED
-    sections are blank."""
+    single `MODEL_CARD.md`."""
     for name in (f"MODEL_CARD.{model_id}.md", "MODEL_CARD.md"):
         if (repo_root / name).is_file():
             return repo_root / name
     return None
 
 
-def _render_model_card(facts: dict, card_path: Path) -> str:
-    """Render a project card with the gathered facts. The user authors the
-    judgment sections in that file; Jinja fills the factual fields and carries
-    the authored prose through."""
+def _card_sections(text: str) -> tuple[str, list[tuple[str, str]]]:
+    """Split Markdown into (text before the first `## ` heading, [(heading,
+    body)]). Headings inside fenced code blocks don't count."""
+    preamble: list[str] = []
+    sections: list[tuple[str, list[str]]] = []
+    fenced = False
+    for line in text.splitlines():
+        if line.lstrip().startswith(("```", "~~~")):
+            fenced = not fenced
+        if not fenced and line.startswith("## "):
+            sections.append((line[3:].strip(), []))
+        else:
+            (sections[-1][1] if sections else preamble).append(line)
+    return "\n".join(preamble).strip(), [(h, "\n".join(b).strip()) for h, b in sections]
+
+
+def _heading_key(heading: str) -> str:
+    return " ".join(heading.lower().split())
+
+
+def _assemble_card(facts: dict, prose: str, label: str) -> tuple[str, list[str]]:
+    """Build the packaged card: Caster's frame (model_card.md.j2) supplies the
+    title, the section order and each section's facts; the project's plain
+    Markdown card supplies what follows them under the same `##` heading.
+
+    A project section the frame doesn't have stays after the section it follows
+    in the project's card. HTML comments (the prompts) are dropped, and the
+    project's own `# ` title gives way to the frame's. Returns (card, warnings):
+    a frame section the project left missing or empty is incomplete."""
     from jinja2 import Environment, FileSystemLoader, select_autoescape
 
     env = Environment(
-        loader=FileSystemLoader(str(card_path.parent)),
+        loader=FileSystemLoader(str(Path(__file__).parent)),
         autoescape=select_autoescape(enabled_extensions=()),  # Markdown, not HTML
         trim_blocks=True,
         lstrip_blocks=True,
     )
-    return env.get_template(card_path.name).render(**facts)
+    title, frame = _card_sections(env.get_template("model_card.md.j2").render(**facts))
+
+    prose = re.sub(r"<!--.*?-->", "", prose, flags=re.S)
+    preamble, own = _card_sections(prose)
+    preamble = "\n".join(ln for ln in preamble.splitlines() if not ln.startswith("# ")).strip()
+    known = {_heading_key(h) for h, _ in frame}
+    bodies: dict[str, list[str]] = {}
+    extras: dict[str | None, list[str]] = {}
+    after = None
+    for heading, body in own:
+        key = _heading_key(heading)
+        if key in known:
+            bodies.setdefault(key, []).append(body)
+            after = key
+        else:
+            extras.setdefault(after, []).append(f"## {heading}\n\n{body}")
+
+    parts = [title, preamble, *extras.get(None, [])]
+    for heading, generated in frame:
+        key = _heading_key(heading)
+        parts += [f"## {heading}", generated, *bodies.get(key, []), *extras.get(key, [])]
+    card = re.sub(r"\n{3,}", "\n\n", "\n\n".join(p for p in parts if p)).strip() + "\n"
+
+    warnings = []
+    for heading in _CARD_REQUIRED:
+        key = _heading_key(heading)
+        if key not in bodies:
+            warnings.append(f"{label}: no '## {heading}' section; the card is incomplete")
+        elif not any(bodies[key]):
+            warnings.append(f"{label}: '## {heading}' is still empty; the card is incomplete")
+    if "{{" in prose or "{%" in prose:
+        warnings.append(
+            f"{label} contains Jinja markers; the card is plain Markdown and they are "
+            f"shown as written (the facts come from caster)"
+        )
+    return card, warnings
 
 
 def _git_archive(ref: str, prefix: str, dest: Path) -> str:
@@ -266,6 +332,7 @@ def _stage_payload(
     commit: str | None,
     payload: Path,
     datasets: list[dict],
+    card: str | None,
 ) -> dict:
     """Lay out the RO-Crate payload directory. Returns a summary dict."""
     summary: dict = {}
@@ -314,14 +381,9 @@ def _stage_payload(
     if "eval_dir" in cfg and _copy_into(Path(cfg["eval_dir"]), prov / "eval"):
         summary["eval"] = Path(cfg["eval_dir"]).name
 
-    # Model card: the project's card for this model (see _model_card_path) — the
-    # user authors the judgment sections; we fill the facts and carry it into the
-    # bundle as MODEL_CARD.md. Omitted, with a warning, if there is none.
-    card_path = _model_card_path(repo_root, cfg.get("model_id", "main"))
-    if card_path is not None:
-        facts = _gather_card_facts(cfg, run_dir, commit, datasets)
-        (payload / "MODEL_CARD.md").write_text(_render_model_card(facts, card_path))
-        summary["model_card"] = card_path.name
+    # Model card, assembled in package(); omitted if the project has none.
+    if card is not None:
+        (payload / "MODEL_CARD.md").write_text(card)
 
     # source distribution pinned to the run commit
     project = cfg.get("project_name") or repo_root.name
@@ -463,9 +525,17 @@ def _write_crate_metadata(ROCrate, payload: Path, cfg: dict, datasets: list[dict
 
 
 def package(
-    cfg: dict, repo_root: Path | None = None, *, dry_run: bool = False, as_json: bool = False
+    cfg: dict,
+    repo_root: Path | None = None,
+    *,
+    dry_run: bool = False,
+    as_json: bool = False,
+    card_only: bool = False,
 ) -> dict:
-    """Build the bag. Returns a stats dict for the packaging step's own stamp."""
+    """Build the bag. Returns a stats dict for the packaging step's own stamp.
+
+    `card_only` returns the model card the bundle would carry, and its warnings,
+    instead; like `dry_run` it writes nothing."""
     bagit, ROCrate = _require_libs()
     repo_root = repo_root or Path(_run("git", "rev-parse", "--show-toplevel").stdout.strip())
 
@@ -507,19 +577,23 @@ def package(
         )
     datasets, dataset_warnings = _resolve_datasets(cfg, repo_root)
     warnings += dataset_warnings
-    model_id = cfg.get("model_id", "main")
-    card_path = _model_card_path(repo_root, model_id)
-    if card_path is None:
-        warnings.append(
-            f"no MODEL_CARD.{model_id}.md or MODEL_CARD.md; the bundle will have no "
-            f"model card. Copy MODEL_CARD.template.md and author it."
-        )
     commit = _run_commit(run_dir)
     if commit is None:
         warnings.append(
             "no commit in the run stamp; the source archive will fall "
             "back to HEAD, which may not be the code that produced this run."
         )
+    model_id = cfg.get("model_id", "main")
+    card_path = _model_card_path(repo_root, model_id)
+    facts = _gather_card_facts(cfg, run_dir, commit, datasets)
+    if card_path is None:
+        warnings.append(
+            f"no MODEL_CARD.{model_id}.md or MODEL_CARD.md; the bundle will have no model card."
+        )
+        card, _ = _assemble_card(facts, "", "MODEL_CARD.md")  # facts only, for --card
+    else:
+        card, card_warnings = _assemble_card(facts, card_path.read_text(), card_path.name)
+        warnings += card_warnings
     if not as_json:
         for w in warnings:
             info(f"caster: WARNING — {w}")
@@ -527,6 +601,12 @@ def package(
     asset_stem = f"{tag}_{model_id}"
     out = Path(cfg.get("output_dir", "releases"))
 
+    if card_only:
+        return {
+            "model_card": card_path.name if card_path else None,
+            "card": card,
+            "warnings": warnings,
+        }
     if dry_run:
         # Report what would be packaged and which warnings would fire; write nothing.
         return {
@@ -550,7 +630,9 @@ def package(
         bag_root.mkdir(parents=True)
         payload = bag_root
 
-        summary = _stage_payload(cfg, repo_root, run_dir, commit, payload, datasets)
+        summary = _stage_payload(
+            cfg, repo_root, run_dir, commit, payload, datasets, card if card_path else None
+        )
         embedded = _stage_datasets(datasets, repo_root, summary["source_ref"], payload)
         _write_crate_metadata(ROCrate, payload, cfg, datasets)
 
@@ -573,7 +655,7 @@ def package(
         "asset": f"{asset_stem}.zip",
         "source_ref": summary["source_ref"],
         "checkpoint_sha256": summary["checkpoint_sha256"],
-        "model_card": summary.get("model_card"),
+        "model_card": card_path.name if card_path else None,
         "datasets": {d["name"]: d["disposition"] for d in datasets},
         "embedded_datasets": embedded,
         "warnings": warnings,
@@ -591,11 +673,16 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="report what would be packaged (and any warnings); write nothing",
     )
+    parser.add_argument(
+        "--card",
+        action="store_true",
+        help="print the model card the bundle would carry (and any warnings); write nothing",
+    )
     parser.add_argument("--json", action="store_true", help="machine-readable output on stdout")
     args = parser.parse_args(argv)
     cfg = yaml.safe_load(Path(args.config).read_text()) or {}
     try:
-        stats = package(cfg, dry_run=args.dry_run, as_json=args.json)
+        stats = package(cfg, dry_run=args.dry_run, as_json=args.json, card_only=args.card)
     except DatasetError as exc:
         if args.json:
             emit_json("package", ok=False, problems=exc.problems)
@@ -606,6 +693,9 @@ def main(argv: list[str]) -> int:
 
     if args.json:
         emit_json("package", ok=True, result=stats, problems=stats.get("warnings", []))
+        return 0
+    if args.card:
+        print(stats["card"], end="")
         return 0
     if args.dry_run:
         info(

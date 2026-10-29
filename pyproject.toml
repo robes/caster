@@ -41,6 +41,9 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 include = ["caster*", "myproject*"]
 
+[tool.setuptools.package-data]
+caster = ["*.j2"]  # the model-card frame
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"

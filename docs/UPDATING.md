@@ -35,11 +35,10 @@ git replace -d "$first"                # the merge commit now links the historie
 The merge commit has `caster/main` as a parent, so the graft is never needed
 again.
 
-If your project predates `MODEL_CARD.template.md` (when the template's card was
-`MODEL_CARD.md`), add `-X no-renames` to this merge. Otherwise git takes the
-template's rename for yours and moves your authored card's edits into the
-template. With it, `MODEL_CARD.md` is a modify/delete conflict: keep yours
-(`git add MODEL_CARD.md`).
+If your `MODEL_CARD.md` still has Jinja fields (`{{ version }}`, `{% for … %}`),
+it predates the plain-Markdown card: keep your side of its conflict, then delete
+those fields and any sentence that only carried a fact; the packaged card adds
+the facts. `caster package <config> --card` warns while any remain.
 
 ## Later updates
 
@@ -54,9 +53,8 @@ git merge caster/main
   on purpose, and then send that change upstream so the next merge is clean.
 - **Your package, configs, `data_sources/`, model cards** are yours. Keep
   your side and adopt any new structure the template introduced (a new required
-  key, a new card field); Caster's commit messages name it. For the cards,
-  `git diff ORIG_HEAD -- MODEL_CARD.template.md` after the merge shows what to
-  copy into yours.
+  key, a new card section); Caster's commit messages name it. The card's facts
+  and layout live in `src/caster/`, so they update with it.
 - **Template examples you renamed or deleted** (`src/myproject/`, the
   `synthetic` dataset and its record): git reports their changes as
   modify/delete conflicts. Apply what you want by hand, then `git rm` them again.

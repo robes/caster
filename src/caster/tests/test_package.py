@@ -120,9 +120,6 @@ def test_reference_names_the_dataset_without_bytes(git_project, run_dir, tmp_pat
     """A reference source defaults to 'reference': the crate and the card name
     its url and citation DOI; no bytes, no fetch.txt; only listed records travel."""
     _stamp_run(run_dir)
-    (git_project / "MODEL_CARD.md").write_text(
-        "{% for d in datasets %}{{ d.name }} {{ d.identifier }} {{ d.citation_doi }}{% endfor %}"
-    )
     cfg = _release_cfg(git_project, run_dir)
     _record(
         git_project,
@@ -145,8 +142,11 @@ def test_reference_names_the_dataset_without_bytes(git_project, run_dir, tmp_pat
     doi = "https://doi.org/10.25550/3-HXMC"
     assert graph[doi]["citation"] == "https://doi.org/10.1038/s41597-022-01338-x"
     assert {"@id": doi} in graph["./"]["isBasedOn"]
-    card = (payload / "MODEL_CARD.md").read_text()
-    assert "pub https://doi.org/10.25550/3-HXMC 10.1038/s41597-022-01338-x" in card
+    card = PKG.package(cfg, repo_root=git_project, card_only=True)["card"]
+    assert (
+        "- **pub** — not included; obtain it from <https://doi.org/10.25550/3-HXMC>. "
+        "Cite <https://doi.org/10.1038/s41597-022-01338-x>." in card
+    )
     copied = sorted(p.name for p in (payload / "provenance" / "data_sources").iterdir())
     assert copied == ["pub.json", "pub.yaml"]
 
@@ -263,72 +263,109 @@ def test_package_json_envelope_has_warnings(git_project, tmp_path):
     assert any("run-stamp" in w or "_provenance" in w for w in result["warnings"])
 
 
-def test_model_card_rendered_from_repo_card(git_project, run_dir):
-    """The project's own MODEL_CARD.md is the source of truth: the packager fills
-    its facts and carries the author's prose into the bundle."""
+def _bundle_card(git_project, stats) -> str:
+    with zipfile.ZipFile(git_project / "releases" / stats["asset"]) as z:
+        return z.read(next(n for n in z.namelist() if n.endswith("data/MODEL_CARD.md"))).decode()
+
+
+def test_model_card_assembles_facts_and_prose(git_project, run_dir):
+    """The project's plain-Markdown card supplies the prose; the frame supplies
+    the title, section order and facts. Prompts (comments) and the project's own
+    title are dropped; an extra section stays after the one it follows."""
     _stamp_run(run_dir)  # stamps stats={"val_accuracy": 0.9}
-    # the project authors a card with a Jinja fact + a human-authored section
     (git_project / "MODEL_CARD.md").write_text(
-        "# Model Card: {{ project_name }} {{ version }}\n\n"
-        "License: {{ license }}\n\n"
-        "## Intended use\n\nClassifying widgets for the demo pipeline.\n"
+        "# My title\n\nA short summary.\n\n"
+        "## Intended use\n\n<!-- prompt -->\nClassifying widgets.\n\n"
+        "## Funding\n\nGrant 42.\n\n"
+        "## Model details\n\nA logistic regression.\n\n"
+        "```\n## not a heading\n```\n"
     )
     cfg = _release_cfg(git_project, run_dir)
     cfg["license"] = "MIT"
-    PKG.package(cfg, repo_root=git_project)
-    import zipfile
+    stats = PKG.package(cfg, repo_root=git_project)
+    card = _bundle_card(git_project, stats)
+    assert stats["model_card"] == "MODEL_CARD.md"
+    assert card.startswith("# Model Card: demo v1.0\n\nA short summary.\n\n## Model details")
+    assert "My title" not in card and "prompt" not in card
+    details = card.index("- **License:** MIT")
+    assert details < card.index("A logistic regression.") < card.index("## not a heading")
+    assert card.index("## Intended use") < card.index("Classifying widgets.")
+    assert card.index("Classifying widgets.") < card.index("## Funding") < card.index("Grant 42.")
+    assert card.index("Grant 42.") < card.index("## Training data")
+    assert "| val_accuracy | 0.9 |" in card
+    assert card.rstrip().endswith("RO-Crate metadata at the bundle root.")
 
-    bundle = next((git_project / "releases").glob("*.zip"))
-    with zipfile.ZipFile(bundle) as z:
-        card_name = next(n for n in z.namelist() if n.endswith("MODEL_CARD.md"))
-        card = z.read(card_name).decode()
-    assert "MIT" in card  # fact filled
-    assert "demo" in card  # project_name fact filled
-    assert "Classifying widgets" in card  # author's prose carried through
+
+def test_model_card_reports_missing_and_empty_sections(git_project, run_dir):
+    _stamp_run(run_dir)
+    (git_project / "MODEL_CARD.md").write_text(
+        "## Model details\n\nx\n\n## Intended use\n\n<!-- only a prompt -->\n\n"
+        "## Training data\n\nx\n\n## Evaluation\n\nx {{ version }}\n"
+    )
+    cfg = _release_cfg(git_project, run_dir)
+    result = PKG.package(cfg, repo_root=git_project, card_only=True)
+    card_warnings = [w for w in result["warnings"] if w.startswith("MODEL_CARD.md")]
+    assert card_warnings == [
+        "MODEL_CARD.md: '## Intended use' is still empty; the card is incomplete",
+        "MODEL_CARD.md: no '## Limitations, risks, and ethical considerations' section; "
+        "the card is incomplete",
+        "MODEL_CARD.md contains Jinja markers; the card is plain Markdown and they are "
+        "shown as written (the facts come from caster)",
+    ]
+    assert "x {{ version }}" in result["card"]  # not rendered
+    assert not (git_project / "releases").exists()  # the preview writes nothing
 
 
 def test_model_card_omitted_when_absent(git_project, run_dir):
-    """A project with no card ships none, and says so; the template is never
-    rendered in its place (its REQUIRED sections are blank)."""
+    """A project with no card ships none, and says so; --card still previews
+    the facts."""
     _stamp_run(run_dir)
-    (git_project / "MODEL_CARD.template.md").write_text("# template\n")
     cfg = _release_cfg(git_project, run_dir)
     dry = PKG.package(cfg, repo_root=git_project, dry_run=True)
     assert dry["model_card"] is None
-    assert any("Copy MODEL_CARD.template.md" in w for w in dry["warnings"])
+    assert any("no MODEL_CARD.main.md or MODEL_CARD.md" in w for w in dry["warnings"])
+    assert (
+        "- **Release identifier:** main"
+        in PKG.package(cfg, repo_root=git_project, card_only=True)["card"]
+    )
     stats = PKG.package(cfg, repo_root=git_project)
     assert stats["model_card"] is None
+    with zipfile.ZipFile(git_project / "releases" / stats["asset"]) as z:
+        assert not any(n.endswith("MODEL_CARD.md") for n in z.namelist())
 
 
-def test_model_card_per_model_id(git_project, run_dir, tmp_path):
+def test_model_card_per_model_id(git_project, run_dir):
     """MODEL_CARD.<model_id>.md is this model's card; MODEL_CARD.md is the
     fallback for every other model."""
     _stamp_run(run_dir)
-    (git_project / "MODEL_CARD.md").write_text("shared card for {{ model_id }}\n")
-    (git_project / "MODEL_CARD.gene.md").write_text("gene card for {{ model_id }}\n")
+    (git_project / "MODEL_CARD.md").write_text("## Intended use\n\nshared prose\n")
+    (git_project / "MODEL_CARD.gene.md").write_text("## Intended use\n\ngene prose\n")
     cfg = _release_cfg(git_project, run_dir)
-    for model_id, card in [("gene", "gene card for gene"), ("main", "shared card for main")]:
+    for model_id, prose in [("gene", "gene prose"), ("main", "shared prose")]:
         cfg["model_id"] = model_id
-        stats = PKG.package(cfg, repo_root=git_project)
-        bundle = git_project / "releases" / stats["asset"]
-        with zipfile.ZipFile(bundle) as z:
-            name = next(n for n in z.namelist() if n.endswith("data/MODEL_CARD.md"))
-            assert z.read(name).decode().strip() == card
+        card = _bundle_card(git_project, PKG.package(cfg, repo_root=git_project))
+        assert f"- **Release identifier:** {model_id}" in card
+        assert prose in card
 
 
-def test_shipped_model_card_template_renders(git_project, run_dir):
-    """The MODEL_CARD.template.md shipped in the project root must be valid Jinja
-    and render without error — guards against template syntax mistakes shipping."""
-    import shutil
+def test_card_cli_prints_the_card(git_project, run_dir, capsys):
+    _stamp_run(run_dir)
+    cfg = _release_cfg(git_project, run_dir)
+    path = git_project / "release.yaml"
+    path.write_text(json.dumps(cfg))
+    assert PKG.main([str(path), "--card"]) == 0
+    assert capsys.readouterr().out.startswith("# Model Card: demo v1.0\n")
+
+
+def test_shipped_model_card_assembles(git_project, run_dir):
+    """The MODEL_CARD.md shipped in the project root assembles with the frame:
+    every required section present (empty until authored), datasets listed one
+    per line."""
     from pathlib import Path as _P
 
-    # locate the shipped template (two levels up from the package)
-    shipped = _P(PKG.__file__).resolve().parents[2] / "MODEL_CARD.template.md"
+    shipped = _P(PKG.__file__).resolve().parents[2] / "MODEL_CARD.md"
     if not shipped.exists():
-        import pytest as _pytest
-
-        _pytest.skip("no shipped MODEL_CARD.template.md in this layout")
-    shutil.copy2(shipped, git_project / "MODEL_CARD.md")
+        pytest.skip("no shipped MODEL_CARD.md in this layout")
     datasets = [
         {"name": n, "disposition": d, "identifier": i, "citation_doi": c}
         for n, d, i, c in [
@@ -338,8 +375,10 @@ def test_shipped_model_card_template_renders(git_project, run_dir):
         ]
     ]
     facts = PKG._gather_card_facts(_release_cfg(git_project, run_dir), run_dir, "abc1234", datasets)
-    rendered = PKG._render_model_card(facts, git_project / "MODEL_CARD.md")
-    assert rendered and "# Model Card:" in rendered  # rendered, didn't raise
-    assert "obtain it from <https://doi.org/10.1/x>. Cite <https://doi.org/10.1/y>." in rendered
-    assert "included under `datasets/pubcopy/`; published at" in rendered
-    assert "\n- **lab** — not included; see its record" in rendered  # one item per line
+    card, warnings = PKG._assemble_card(facts, shipped.read_text(), "MODEL_CARD.md")
+    assert card.startswith("# Model Card:")
+    assert all("is still empty" in w for w in warnings) and len(warnings) == 5
+    assert "<!--" not in card
+    assert "obtain it from <https://doi.org/10.1/x>. Cite <https://doi.org/10.1/y>." in card
+    assert "included under `datasets/pubcopy/`; published at" in card
+    assert "\n- **lab** — not included; see its record" in card  # one item per line
