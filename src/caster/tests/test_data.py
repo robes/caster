@@ -44,7 +44,7 @@ distribution:
     assert (doc["type"], doc["format"]) == ("reference", "other")  # carried through
 
 
-def test_emit_local_distribution_needs_no_url(git_project):
+def test_emit_without_distribution_declares_no_files(git_project):
     sources = git_project / "data_sources"
     sources.mkdir()
     _write_yaml(
@@ -54,13 +54,18 @@ name: cohort
 type: local
 description: In-house cohort, not redistributable.
 license: proprietary
-distribution: local
 provenance: |
   Assembled in-house.
 """,
     )
     out = D.emit("cohort", sources_dir=sources)
     assert D.validate_record(out) == []
+    assert "distribution" not in json.loads(out.read_text())
+
+
+def test_distribution_must_be_a_list():
+    spec = {"name": "x", "type": "local", "distribution": "files"}
+    assert D.check_spec(spec, "x.yaml") == ["x.yaml: 'distribution' must be a list of files"]
 
 
 def test_emit_rejects_distribution_without_url(git_project):
@@ -124,7 +129,6 @@ name: ds
 type: local
 description: a documented dataset.
 license: CC0-1.0
-distribution: local
 """,
     )
     D.emit("ds", sources_dir=sources)

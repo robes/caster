@@ -149,7 +149,6 @@ provenance: |
     - Source B registry pull, joined on subject hash
     - Manual adjudication of 142 ambiguous records
   Reassembly requires institutional access; contact <PI email>.
-distribution: local                      # no public files; bytes in data/ + DVC
 ```
 
 Here Croissant documents *what the data is and how it was built*; DVC (with a

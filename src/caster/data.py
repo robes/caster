@@ -104,45 +104,42 @@ def _build_metadata(spec: dict):
     if not name:
         raise ValueError("emit: the YAML must have a 'name'.")
 
-    # distribution: a list of {name, sha256, content_size?} or a bare 'local'
+    # distribution: the files Croissant should declare, each {name, url?, sha256 |
+    # md5, content_size?}; absent when there are none to download.
     distribution = []
-    dist = spec.get("distribution")
-    if isinstance(dist, list):
-        for d in dist:
-            fname = d.get("name", name)
-            enc = d.get("encoding_format") or _guess_encoding_format(fname)
-            content_url = d.get("url", spec.get("url"))
-            if not content_url:
-                raise ValueError(
-                    f"emit: distribution entry {fname!r} for dataset {name!r} "
-                    f"needs a 'url' (a per-entry 'url:' or a top-level 'url:'). "
-                    f"Croissant requires a contentUrl on every file. For data with "
-                    f"no public URL, use 'distribution: local' instead of a list."
-                )
-            # YAML may parse an all-digit hash as an int; Croissant wants a str.
-            sha = d.get("sha256")
-            md5 = d.get("md5")
-            sha_str = str(sha) if sha is not None else None
-            if sha_str is not None and len(sha_str) not in (64,) and sha_str.strip("0") == "":
-                print(
-                    f"caster: warning: dataset {name!r} distribution "
-                    f"{fname!r} has a placeholder-looking sha256 ({sha_str!r}); "
-                    f"fill in the real digest.",
-                    file=sys.stderr,
-                )
-            distribution.append(
-                mlc.FileObject(
-                    id=fname,
-                    name=fname,
-                    content_url=content_url,
-                    sha256=sha_str,
-                    md5=str(md5) if md5 is not None else None,
-                    content_size=d.get("content_size"),
-                    encoding_formats=[enc],  # mlcroissant requires encodingFormat
-                )
+    for d in spec.get("distribution") or []:
+        fname = d.get("name", name)
+        enc = d.get("encoding_format") or _guess_encoding_format(fname)
+        content_url = d.get("url", spec.get("url"))
+        if not content_url:
+            raise ValueError(
+                f"emit: distribution entry {fname!r} for dataset {name!r} "
+                f"needs a 'url' (a per-entry 'url:' or a top-level 'url:'). "
+                f"Croissant requires a contentUrl on every file. For data with "
+                f"no public URL, leave 'distribution' out."
             )
-    # 'local' / None distribution -> no FileObject (bytes live only in DVC); the
-    # provenance prose carries how it was built.
+        # YAML may parse an all-digit hash as an int; Croissant wants a str.
+        sha = d.get("sha256")
+        md5 = d.get("md5")
+        sha_str = str(sha) if sha is not None else None
+        if sha_str is not None and len(sha_str) not in (64,) and sha_str.strip("0") == "":
+            print(
+                f"caster: warning: dataset {name!r} distribution "
+                f"{fname!r} has a placeholder-looking sha256 ({sha_str!r}); "
+                f"fill in the real digest.",
+                file=sys.stderr,
+            )
+        distribution.append(
+            mlc.FileObject(
+                id=fname,
+                name=fname,
+                content_url=content_url,
+                sha256=sha_str,
+                md5=str(md5) if md5 is not None else None,
+                content_size=d.get("content_size"),
+                encoding_formats=[enc],  # mlcroissant requires encodingFormat
+            )
+        )
 
     citation = spec.get("citation") or {}
     cite_as = citation.get("bibtex") or citation.get("text")
@@ -192,6 +189,8 @@ def check_spec(spec: dict, label: str) -> list[str]:
                 f"{label}: a reference needs 'format', one of {', '.join(FORMATS)} "
                 f"(got {spec.get('format')!r})"
             )
+    if "distribution" in spec and not isinstance(spec["distribution"], list):
+        problems.append(f"{label}: 'distribution' must be a list of files")
     return problems
 
 
