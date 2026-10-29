@@ -157,11 +157,11 @@ portable data-hash manifest, a source archive pinned to the run's commit, and a
 
 The card's factual fields (name, version, commit, metrics, datasets) are
 auto-filled from the provenance; its judgment sections (intended use,
-limitations, ethics) you author directly in the project's own `MODEL_CARD.md`
-(repo root) — ideally before this step, not after — so the packaged card is
-complete, not a facts-only stub. The packager renders your `MODEL_CARD.md`,
-filling the facts and carrying your prose through. (A project with no
-`MODEL_CARD.md` simply ships no card.)
+limitations, ethics) you author in a copy of `MODEL_CARD.template.md`:
+`MODEL_CARD.md`, or `MODEL_CARD.<model_id>.md` per model — ideally before this
+step, not after — so the packaged card is complete, not a facts-only stub. The
+packager renders the model's card, filling the facts and carrying your prose
+through. (With no card, it warns and the bundle has none.)
 
 **5. Deposit it.** The bag is suitable for a DOI-issuing archive (Zenodo, OSF,
 Dataverse). An outside reader with only the deposit can obtain the data via the

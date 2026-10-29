@@ -1,11 +1,14 @@
 # Model Card: {{ project_name }} {{ version }}
 
 {% raw %}<!--
-This is your project's model card (Mitchell et al., 2019) — the human-facing
-companion to the machine-verifiable provenance Caster records.
+A model card (Mitchell et al., 2019) — the human-facing companion to the
+machine-verifiable provenance Caster records.
 
-It is a single source of truth. Author the judgment sections directly in this
-file as you work. At release time `caster.package` renders a copy into the bundle,
+This is the template; it is updated with Caster, so don't edit it. Copy it to
+MODEL_CARD.md, or to MODEL_CARD.<model_id>.md for each model when the project
+releases several (<model_id> as in the release config), and author the judgment
+sections there as you work. At release time `caster.package` renders that card
+into the bundle,
 filling the factual fields (the `{{ ... }}` and loops below) from the run-stamp,
 the held-out eval, the release config, and the data_sources records — and
 carrying your authored prose through unchanged.

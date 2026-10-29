@@ -35,6 +35,12 @@ git replace -d "$first"                # the merge commit now links the historie
 The merge commit has `caster/main` as a parent, so the graft is never needed
 again.
 
+If your project predates `MODEL_CARD.template.md` (when the template's card was
+`MODEL_CARD.md`), add `-X no-renames` to this merge. Otherwise git takes the
+template's rename for yours and moves your authored card's edits into the
+template. With it, `MODEL_CARD.md` is a modify/delete conflict: keep yours
+(`git add MODEL_CARD.md`).
+
 ## Later updates
 
 ```bash
@@ -46,9 +52,11 @@ git merge caster/main
 
 - **`src/caster/`** is template-owned. Take Caster's side, unless you changed it
   on purpose, and then send that change upstream so the next merge is clean.
-- **Your package, configs, `data_sources/`, `MODEL_CARD.md`** are yours. Keep
+- **Your package, configs, `data_sources/`, model cards** are yours. Keep
   your side and adopt any new structure the template introduced (a new required
-  key, a new card field); Caster's commit messages name it.
+  key, a new card field); Caster's commit messages name it. For the cards,
+  `git diff ORIG_HEAD -- MODEL_CARD.template.md` after the merge shows what to
+  copy into yours.
 - **Template examples you renamed or deleted** (`src/myproject/`, the
   `synthetic` dataset and its record): git reports their changes as
   modify/delete conflicts. Apply what you want by hand, then `git rm` them again.

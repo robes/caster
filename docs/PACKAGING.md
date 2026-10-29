@@ -175,17 +175,20 @@ writes the checksum manifests; `bdbag --validate full .` confirms intactness.
 ### The model card
 
 The bundle includes a `MODEL_CARD.md` (Mitchell et al., 2019) — the human-facing
-companion to the machine-verifiable provenance. The project's own `MODEL_CARD.md`
-(in the repo root) is the single source of truth: you author the judgment
-sections (intended use, limitations, ethical considerations) directly in it, and
-the packager renders a copy into the bundle, filling the *factual* fields it
-already has — name, version, commit, license, metrics (held-out eval, else the
-run-stamp's stats), and dataset names — via Jinja while carrying your prose
-through unchanged. The factual fields use `{{ ... }}` / `{% ... %}` markers
+companion to the machine-verifiable provenance. Caster ships
+`MODEL_CARD.template.md`, which is updated with the template; you copy it to
+`MODEL_CARD.md`, or to `MODEL_CARD.<model_id>.md` per model when the project
+releases several (`model_id` from the release config), and author the judgment
+sections (intended use, limitations, ethical considerations) there. The
+packager takes `MODEL_CARD.<model_id>.md`, else `MODEL_CARD.md`, and renders it
+into the bundle, filling the *factual* fields it already has — name, version,
+commit, license, metrics (held-out eval, else the run-stamp's stats), and
+datasets — via Jinja while carrying your prose through unchanged. The factual fields use `{{ ... }}` / `{% ... %}` markers
 (leave them); the judgment sections are marked `REQUIRED` and cannot be
 auto-filled — Caster will not auto-draft plausible-looking prose for them. A card
 whose REQUIRED sections are still blank is incomplete even though the facts look
-done. A project that deletes its `MODEL_CARD.md` simply ships no card.
+done. With no card for the model, the bundle has none and the packager warns;
+it never ships the template.
 
 ### Verification is tolerant, not bit-exact
 

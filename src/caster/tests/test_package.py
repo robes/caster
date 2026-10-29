@@ -157,7 +157,7 @@ def test_local_defaults_to_omit(git_project, run_dir):
     cfg["datasets"] = [{"name": "synthetic"}]
     result = PKG.package(cfg, repo_root=git_project, dry_run=True)
     assert result["datasets"] == {"synthetic": "omit"}
-    assert result["warnings"] == []
+    assert not any("synthetic" in w for w in result["warnings"])
 
 
 @pytest.mark.parametrize(
@@ -288,25 +288,46 @@ def test_model_card_rendered_from_repo_card(git_project, run_dir):
 
 
 def test_model_card_omitted_when_absent(git_project, run_dir):
-    """A project with no MODEL_CARD.md simply ships no card (no crash)."""
+    """A project with no card ships none, and says so; the template is never
+    rendered in its place (its REQUIRED sections are blank)."""
     _stamp_run(run_dir)
+    (git_project / "MODEL_CARD.template.md").write_text("# template\n")
     cfg = _release_cfg(git_project, run_dir)
+    dry = PKG.package(cfg, repo_root=git_project, dry_run=True)
+    assert dry["model_card"] is None
+    assert any("Copy MODEL_CARD.template.md" in w for w in dry["warnings"])
     stats = PKG.package(cfg, repo_root=git_project)
-    assert "model_card" not in stats
+    assert stats["model_card"] is None
+
+
+def test_model_card_per_model_id(git_project, run_dir, tmp_path):
+    """MODEL_CARD.<model_id>.md is this model's card; MODEL_CARD.md is the
+    fallback for every other model."""
+    _stamp_run(run_dir)
+    (git_project / "MODEL_CARD.md").write_text("shared card for {{ model_id }}\n")
+    (git_project / "MODEL_CARD.gene.md").write_text("gene card for {{ model_id }}\n")
+    cfg = _release_cfg(git_project, run_dir)
+    for model_id, card in [("gene", "gene card for gene"), ("main", "shared card for main")]:
+        cfg["model_id"] = model_id
+        stats = PKG.package(cfg, repo_root=git_project)
+        bundle = git_project / "releases" / stats["asset"]
+        with zipfile.ZipFile(bundle) as z:
+            name = next(n for n in z.namelist() if n.endswith("data/MODEL_CARD.md"))
+            assert z.read(name).decode().strip() == card
 
 
 def test_shipped_model_card_template_renders(git_project, run_dir):
-    """The MODEL_CARD.md shipped in the project root must be valid Jinja and
-    render without error — guards against template syntax mistakes shipping."""
+    """The MODEL_CARD.template.md shipped in the project root must be valid Jinja
+    and render without error — guards against template syntax mistakes shipping."""
     import shutil
     from pathlib import Path as _P
 
-    # locate the repo's shipped MODEL_CARD.md (two levels up from the package)
-    shipped = _P(PKG.__file__).resolve().parents[2] / "MODEL_CARD.md"
+    # locate the shipped template (two levels up from the package)
+    shipped = _P(PKG.__file__).resolve().parents[2] / "MODEL_CARD.template.md"
     if not shipped.exists():
         import pytest as _pytest
 
-        _pytest.skip("no shipped MODEL_CARD.md in this layout")
+        _pytest.skip("no shipped MODEL_CARD.template.md in this layout")
     shutil.copy2(shipped, git_project / "MODEL_CARD.md")
     datasets = [
         {"name": n, "disposition": d, "identifier": i, "citation_doi": c}
@@ -317,7 +338,7 @@ def test_shipped_model_card_template_renders(git_project, run_dir):
         ]
     ]
     facts = PKG._gather_card_facts(_release_cfg(git_project, run_dir), run_dir, "abc1234", datasets)
-    rendered = PKG._render_model_card(facts, git_project)
+    rendered = PKG._render_model_card(facts, git_project / "MODEL_CARD.md")
     assert rendered and "# Model Card:" in rendered  # rendered, didn't raise
     assert "obtain it from <https://doi.org/10.1/x>. Cite <https://doi.org/10.1/y>." in rendered
     assert "included under `datasets/pubcopy/`; published at" in rendered

@@ -207,24 +207,29 @@ def _gather_card_facts(cfg: dict, run_dir: Path, commit: str | None, datasets: l
     }
 
 
-def _render_model_card(facts: dict, repo_root: Path) -> str | None:
-    """Render the project's own `MODEL_CARD.md` (the single source of truth, in
-    the repo root) with the gathered facts. The user authors the judgment
-    sections in that file; Jinja fills the factual fields and carries the authored
-    prose through. Returns None if the project has no card (then packaging simply
-    omits it)."""
+def _model_card_path(repo_root: Path, model_id: str) -> Path | None:
+    """The project's card for this model: `MODEL_CARD.<model_id>.md`, else the
+    single `MODEL_CARD.md`. Never `MODEL_CARD.template.md`, whose REQUIRED
+    sections are blank."""
+    for name in (f"MODEL_CARD.{model_id}.md", "MODEL_CARD.md"):
+        if (repo_root / name).is_file():
+            return repo_root / name
+    return None
+
+
+def _render_model_card(facts: dict, card_path: Path) -> str:
+    """Render a project card with the gathered facts. The user authors the
+    judgment sections in that file; Jinja fills the factual fields and carries
+    the authored prose through."""
     from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-    card_path = repo_root / "MODEL_CARD.md"
-    if not card_path.exists():
-        return None
     env = Environment(
-        loader=FileSystemLoader(str(repo_root)),
+        loader=FileSystemLoader(str(card_path.parent)),
         autoescape=select_autoescape(enabled_extensions=()),  # Markdown, not HTML
         trim_blocks=True,
         lstrip_blocks=True,
     )
-    return env.get_template("MODEL_CARD.md").render(**facts)
+    return env.get_template(card_path.name).render(**facts)
 
 
 def _git_archive(ref: str, prefix: str, dest: Path) -> str:
@@ -309,13 +314,14 @@ def _stage_payload(
     if "eval_dir" in cfg and _copy_into(Path(cfg["eval_dir"]), prov / "eval"):
         summary["eval"] = Path(cfg["eval_dir"]).name
 
-    # Model card: the project's own MODEL_CARD.md (repo root) is the single source
-    # of truth — the user authors the judgment sections; we fill the facts and
-    # carry it into the bundle. Omitted if the project has no card.
-    card = _render_model_card(_gather_card_facts(cfg, run_dir, commit, datasets), repo_root)
-    if card is not None:
-        (payload / "MODEL_CARD.md").write_text(card)
-        summary["model_card"] = True
+    # Model card: the project's card for this model (see _model_card_path) — the
+    # user authors the judgment sections; we fill the facts and carry it into the
+    # bundle as MODEL_CARD.md. Omitted, with a warning, if there is none.
+    card_path = _model_card_path(repo_root, cfg.get("model_id", "main"))
+    if card_path is not None:
+        facts = _gather_card_facts(cfg, run_dir, commit, datasets)
+        (payload / "MODEL_CARD.md").write_text(_render_model_card(facts, card_path))
+        summary["model_card"] = card_path.name
 
     # source distribution pinned to the run commit
     project = cfg.get("project_name") or repo_root.name
@@ -501,6 +507,13 @@ def package(
         )
     datasets, dataset_warnings = _resolve_datasets(cfg, repo_root)
     warnings += dataset_warnings
+    model_id = cfg.get("model_id", "main")
+    card_path = _model_card_path(repo_root, model_id)
+    if card_path is None:
+        warnings.append(
+            f"no MODEL_CARD.{model_id}.md or MODEL_CARD.md; the bundle will have no "
+            f"model card. Copy MODEL_CARD.template.md and author it."
+        )
     commit = _run_commit(run_dir)
     if commit is None:
         warnings.append(
@@ -511,7 +524,6 @@ def package(
         for w in warnings:
             info(f"caster: WARNING — {w}")
     tag = cfg.get("tag", "untagged")
-    model_id = cfg.get("model_id", "main")
     asset_stem = f"{tag}_{model_id}"
     out = Path(cfg.get("output_dir", "releases"))
 
@@ -524,6 +536,7 @@ def package(
             "run_dir": str(run_dir),
             "would_use_commit": commit,
             "datasets": {d["name"]: d["disposition"] for d in datasets},
+            "model_card": card_path.name if card_path else None,
             "warnings": warnings,
         }
 
@@ -560,6 +573,7 @@ def package(
         "asset": f"{asset_stem}.zip",
         "source_ref": summary["source_ref"],
         "checkpoint_sha256": summary["checkpoint_sha256"],
+        "model_card": summary.get("model_card"),
         "datasets": {d["name"]: d["disposition"] for d in datasets},
         "embedded_datasets": embedded,
         "warnings": warnings,

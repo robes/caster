@@ -43,7 +43,8 @@ project/
 ├── CONTRIBUTING.md              # how to set up, run, and contribute
 ├── AGENTS.md                    # orientation for coding agents: commands, affordances, invariants
 ├── CLAUDE.md                    # one-line pointer to AGENTS.md
-├── MODEL_CARD.md                # your model card; caster.package fills facts + carries your prose at release
+├── MODEL_CARD.template.md       # model-card template; copy to MODEL_CARD[.<model_id>].md and author it
+│                                #   (caster.package fills facts + carries your prose at release)
 ├── Makefile                     # thin convenience targets: setup/test/lint/pipeline/package/check
 ├── docs/                        # reference documentation
 │   ├── HOWTO.md                 # end-to-end: data → experiments → release, for your project
