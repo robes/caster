@@ -599,7 +599,10 @@ def package(
             info(f"caster: WARNING — {w}")
     tag = cfg.get("tag", "untagged")
     asset_stem = f"{tag}_{model_id}"
-    out = Path(cfg.get("output_dir", "releases"))
+    # one directory per release: its bundle and the packaging step's own stamp,
+    # so building another release never overwrites this one's record
+    release_dir = Path(cfg.get("output_dir", "releases")) / asset_stem
+    asset = f"{asset_stem}/{asset_stem}.zip"  # relative to output_dir
 
     if card_only:
         return {
@@ -611,8 +614,8 @@ def package(
         # Report what would be packaged and which warnings would fire; write nothing.
         return {
             "dry_run": True,
-            "asset": f"{asset_stem}.zip",
-            "output_dir": str(out),
+            "asset": asset,
+            "output_dir": str(release_dir.parent),
             "run_dir": str(run_dir),
             "would_use_commit": commit,
             "datasets": {d["name"]: d["disposition"] for d in datasets},
@@ -620,7 +623,7 @@ def package(
             "warnings": warnings,
         }
 
-    out.mkdir(parents=True, exist_ok=True)
+    release_dir.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory() as tmp:
         # Build the RO-Crate at the bag root. bagit.make_bag then relocates
@@ -648,11 +651,11 @@ def package(
             },
         )
 
-        shutil.make_archive(str(out / asset_stem), "zip", tmp, asset_stem)
+        shutil.make_archive(str(release_dir / asset_stem), "zip", tmp, asset_stem)
 
     stats = {
         "platform": "rocrate-bagit",
-        "asset": f"{asset_stem}.zip",
+        "asset": asset,
         "source_ref": summary["source_ref"],
         "checkpoint_sha256": summary["checkpoint_sha256"],
         "model_card": card_path.name if card_path else None,
@@ -661,7 +664,7 @@ def package(
         "warnings": warnings,
     }
     # the packaging step is itself provenance-tracked
-    write_stamp(out, stats=stats)
+    write_stamp(release_dir, stats=stats)
     return stats
 
 

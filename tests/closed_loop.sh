@@ -44,7 +44,7 @@ sed "s|run_dir: outputs/2026-01-01/00-00-00|run_dir: $RUN_DIR|g; \
      s|eval_dir: outputs/2026-01-01/00-00-00|eval_dir: $RUN_DIR|g" \
      configs/release/v1.0_main.yaml > "$REL"
 uv run caster package "$REL" >/dev/null 2>&1
-BUNDLE="$(ls releases/*.zip | head -1)"
+BUNDLE="$(ls releases/*/*.zip | head -1)"
 cp "$BUNDLE" "$WORK/release.zip"
 echo "  bundle: $(basename "$BUNDLE")"
 
